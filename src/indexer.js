@@ -1,0 +1,176 @@
+export const CONFIG = {
+  api: 'https://robinhoodchain.blockscout.com/api/v2',
+  explorer: 'https://robinhoodchain.blockscout.com',
+  rpc: 'https://rpc.mainnet.chain.robinhood.com',
+  staking: '0xB078cc304A0B264C5F3680DC0488954ACcd02E87',
+  sNet: '0xb773ec2c326b7f98a5a83fc098825492f020a4c7',
+  deploymentBlock: 11439688,
+  decimals: 9,
+};
+
+const INITIAL_SUPPLY = 5_000_000_000n * 1_000_000_000n;
+const MAX_UINT = (1n << 256n) - 1n;
+const TOTAL_GONS = MAX_UINT - (MAX_UINT % INITIAL_SUPPLY);
+const TOPICS = {
+  staked: '0x5dac0c1b1112564a045ba943c9d50270893e8e826c49be8e7073adc713ab7bd7',
+  unstaked: '0xd8654fcc8cf5b36d30b3f5e4688fc78118e6d68de60b9994e09902268b57c3e3',
+  rebased: '0x8d01b778e641f65fc8a5cae34cc83e082ab8b2149b3c1bb3925913116fe4633f',
+  transfer: '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+  approval: '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925',
+};
+const lower = (v = '') => v.toLowerCase();
+const valueOf = (log, name) => log.decoded?.parameters?.find((p) => p.name === name)?.value;
+const eventOf = (log) => log.decoded?.method_call?.split('(')[0] || '';
+const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transaction_hash}:${log.index}`;
+const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
+
+export function emptyState() {
+  return { version: 1, cutoffBlock: CONFIG.deploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [] };
+}
+
+export function hydrate(raw) {
+  const state = raw || emptyState();
+  return {
+    ...state,
+    totalSupply: BigInt(state.totalSupply), gpf: BigInt(state.gpf),
+    gons: new Map(Object.entries(state.gons || {}).map(([k, v]) => [k, BigInt(v)])),
+    earned: new Map(Object.entries(state.earned || {}).map(([k, v]) => [k, BigInt(v)])),
+    wallets: new Map(Object.entries(state.wallets || {})), seen: new Set(state.seen || []),
+  };
+}
+
+export function serialize(state) {
+  return {
+    version: 1, cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt,
+    totalSupply: state.totalSupply.toString(), gpf: state.gpf.toString(),
+    gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
+    earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
+    wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
+    seen: [...state.seen].slice(-5000),
+  };
+}
+
+function wallet(state, address) {
+  const key = lower(address);
+  if (!state.wallets.has(key)) state.wallets.set(key, { address, added: '0', removed: '0', stakes: 0, unstakes: 0, lastActive: null });
+  return state.wallets.get(key);
+}
+
+function addBig(obj, field, amount) { obj[field] = (BigInt(obj[field] || 0) + amount).toString(); }
+
+export function applyLogs(state, logs) {
+  const ordered = logs.filter((l) => !state.seen.has(idOf(l))).sort(cmp);
+  for (const log of ordered) {
+    const id = idOf(log); state.seen.add(id);
+    state.cutoffBlock = Math.max(state.cutoffBlock, log.block_number);
+    state.indexedAt = log.block_timestamp || state.indexedAt;
+    const event = eventOf(log), contract = lower(log.address?.hash || log.address);
+    if (contract === lower(CONFIG.sNet)) {
+      if (event === 'Transfer') {
+        const from = lower(valueOf(log, 'from')), toRaw = valueOf(log, 'to'), to = lower(toRaw);
+        const amount = BigInt(valueOf(log, 'value') || 0), moved = amount * state.gpf;
+        if (from !== '0x0000000000000000000000000000000000000000') state.gons.set(from, (state.gons.get(from) || 0n) - moved);
+        if (to !== '0x0000000000000000000000000000000000000000') state.gons.set(to, (state.gons.get(to) || 0n) + moved);
+      } else if (event === 'LogRebase') {
+        const before = state.gpf, increase = BigInt(valueOf(log, 'rebaseAmount') || 0);
+        state.totalSupply += increase; state.gpf = TOTAL_GONS / state.totalSupply;
+        if (increase > 0n) for (const [address, gons] of state.gons) {
+          if (address === lower(CONFIG.staking) || gons <= 0n) continue;
+          const reward = gons / state.gpf - gons / before;
+          if (reward > 0n) state.earned.set(address, (state.earned.get(address) || 0n) + reward);
+        }
+      }
+    }
+    if (contract === lower(CONFIG.staking) && ['Staked', 'Unstaked', 'Rebased'].includes(event)) {
+      const amountName = event === 'Rebased' ? 'distributed' : 'amount';
+      const amount = BigInt(valueOf(log, amountName) || 0);
+      const actor = event === 'Staked' ? valueOf(log, 'to') : event === 'Unstaked' ? valueOf(log, 'from') : null;
+      if (actor) {
+        const w = wallet(state, actor); const field = event === 'Staked' ? 'added' : 'removed';
+        addBig(w, field, amount); w[event === 'Staked' ? 'stakes' : 'unstakes'] += 1; w.lastActive = log.block_timestamp;
+      }
+      state.activity.unshift({ id, type: event, actor, recipient: event === 'Unstaked' ? valueOf(log, 'to') : null, amount: amount.toString(), epoch: valueOf(log, 'epoch') || null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
+    }
+  }
+  state.activity = state.activity.sort((a, b) => b.block - a.block).slice(0, 1500);
+  return state;
+}
+
+export function viewModel(state) {
+  const rows = new Set([...state.wallets.keys(), ...state.gons.keys()]);
+  const stakers = [...rows].filter((a) => a !== lower(CONFIG.staking)).map((address) => {
+    const w = state.wallets.get(address) || { address, added: '0', removed: '0', stakes: 0, unstakes: 0, lastActive: null };
+    return { ...w, address: w.address || address, balance: ((state.gons.get(address) || 0n) / state.gpf).toString(), rewards: (state.earned.get(address) || 0n).toString() };
+  }).filter((w) => BigInt(w.added) || BigInt(w.removed) || BigInt(w.balance)).sort((a, b) => BigInt(a.balance) === BigInt(b.balance) ? 0 : BigInt(a.balance) > BigInt(b.balance) ? -1 : 1);
+  const totalStaked = stakers.reduce((n, w) => n + BigInt(w.balance), 0n);
+  const totalRewards = stakers.reduce((n, w) => n + BigInt(w.rewards), 0n);
+  return { stakers, activity: state.activity, totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt };
+}
+
+async function request(url, attempts = 6) {
+  for (let i = 0; i < attempts; i++) {
+    try { const r = await fetch(url, { headers: { accept: 'application/json' } }); if (r.ok) return await r.json(); } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 700 * (i + 1)));
+  }
+  throw new Error('Blockscout is temporarily rate-limiting requests. Retrying on the next refresh.');
+}
+
+export async function fetchLogs(address, { stopAt = 0, cutoff = Infinity, onProgress } = {}) {
+  let url = `${CONFIG.api}/addresses/${address}/logs`, page = 0; const all = [];
+  while (url && page < 1000) {
+    const json = await request(url); page += 1;
+    const items = json.items || []; all.push(...items.filter((l) => l.block_number > stopAt && l.block_number <= cutoff));
+    onProgress?.({ address, page, count: all.length });
+    if (!json.next_page_params || items.some((l) => l.block_number <= stopAt)) break;
+    const params = new URLSearchParams(Object.entries(json.next_page_params).map(([k, v]) => [k, String(v)]));
+    url = `${CONFIG.api}/addresses/${address}/logs?${params}`;
+  }
+  return all;
+}
+
+const word = (hex, n) => `0x${hex.slice(2 + n * 64, 2 + (n + 1) * 64)}`;
+const topicAddress = (topic) => `0x${topic.slice(-40)}`;
+function normalizeLegacy(log, address) {
+  const t = lower(log.topics?.[0]), isStaking = lower(address) === lower(CONFIG.staking);
+  let name, parameters = [];
+  if (t === TOPICS.staked || t === TOPICS.unstaked) {
+    name = t === TOPICS.staked ? 'Staked' : 'Unstaked';
+    parameters = [{ name: 'from', value: topicAddress(log.topics[1]) }, { name: 'to', value: topicAddress(log.topics[2]) }, { name: 'amount', value: BigInt(log.data).toString() }];
+  } else if (t === TOPICS.rebased) {
+    name = 'Rebased'; parameters = [{ name: 'epoch', value: BigInt(log.topics[1]).toString() }, { name: 'distributed', value: BigInt(log.data).toString() }];
+  } else if (!isStaking && t === TOPICS.transfer) {
+    name = 'Transfer'; parameters = [{ name: 'from', value: topicAddress(log.topics[1]) }, { name: 'to', value: topicAddress(log.topics[2]) }, { name: 'value', value: BigInt(log.data).toString() }];
+  } else if (!isStaking && t !== TOPICS.approval) {
+    name = 'LogRebase'; parameters = [{ name: 'epoch', value: BigInt(log.topics[1]).toString() }, { name: 'rebaseAmount', value: BigInt(word(log.data, 0)).toString() }, { name: 'index', value: BigInt(word(log.data, 1)).toString() }];
+  } else return null;
+  return { address, block_number: Number(BigInt(log.blockNumber)), block_timestamp: new Date(Number(BigInt(log.timeStamp)) * 1000).toISOString(), data: log.data, decoded: { method_call: `${name}()`, parameters }, index: Number(BigInt(log.logIndex)), topics: log.topics, transaction_hash: log.transactionHash };
+}
+
+export async function fetchHistoricalLogs(address, fromBlock, toBlock, onProgress) {
+  let requests = 0;
+  async function range(from, to) {
+    const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address });
+    let json;
+    for (let retry = 0; retry < 8; retry++) {
+      json = await request(`https://robinhoodchain.blockscout.com/api?${params}`); requests += 1;
+      if (!/Too many requests/i.test(json.message || json.result || '')) break;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * (retry + 1)));
+    }
+    if (json.status === '0' && /No logs/i.test(json.message || json.result || '')) return [];
+    const items = Array.isArray(json.result) ? json.result : [];
+    onProgress?.({ address, page: requests, count: items.length });
+    if (items.length >= 1000 && from < to) {
+      const mid = Math.floor((from + to) / 2);
+      const [a, b] = await Promise.all([range(from, mid), range(mid + 1, to)]);
+      return [...a, ...b];
+    }
+    return items;
+  }
+  return (await range(fromBlock, toBlock)).map((log) => normalizeLegacy(log, address)).filter(Boolean);
+}
+
+export async function latestBlock() {
+  const body = await request(`${CONFIG.api}/blocks?type=block`);
+  if (!body.items?.[0]?.height) throw new Error('Unable to read the current Robinhood Chain block.');
+  return Number(body.items[0].height);
+}
