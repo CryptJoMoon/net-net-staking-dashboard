@@ -1,5 +1,11 @@
 name: Update staking ledger
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'src/indexer.js'
+      - '.github/workflows/update-snapshot.yml'
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
