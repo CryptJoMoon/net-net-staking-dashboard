@@ -13,7 +13,9 @@ export const CONFIG = {
   rwaDesk: '0x99B6eE6eDe47d9a8a9bfd03F728a99B789df1961',
   packDesk: '0x7cf28D61D42352Eb2FD68167e9B08f73CBbF21eB',
   managerSleeve: '0x498752D5fa0600CBd613074C151Abe15B3FeC7CB',
+  winNet: '0x7332B329860986e596B2fd71e9c53786c0242ce5',
   deploymentBlock: 11439688,
+  winNetDeploymentBlock: 20922503,
   decimals: 9,
 };
 
@@ -27,6 +29,15 @@ const TOPICS = {
   transfer: '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
   approval: '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925',
 };
+const WINNET_TOPICS = {
+  entered: '0xad30511f5397c2d44beaaf7e942e746f493c3dc189163814096d170c8d9f8df6',
+  enteredWithNet: '0x12f16f2fae71bc4ed6fe595fe468c4d4dae62bb936851ef11fdd9db0b5568681',
+  exited: '0x8a5fb43af839bf26e1fb4b456434b3cf69111df1b3e95abca72edeb31588a7ba',
+  exitedToUsdg: '0x976a9f453f5c058ec504d1fd497581dc7cda9fe95209f9dc6f55f8ed749051f0',
+  prizePaid: '0x3d8e8e4fb25b225f79c876a0e65b0399b4202048d4d72f276c1f0fa046891167',
+  earlyUnlocked: '0xa3fbf5ab09b5d4aef9d96d27ec59daf5803b6b5b80a219070d47c8b907616053',
+  fullExit: '0x68443e4550884e7d05d71c512db6fcd2474daf53bf5b98464a53637b9011e560',
+};
 const lower = (v = '') => v.toLowerCase();
 const valueOf = (log, name) => log.decoded?.parameters?.find((p) => p.name === name)?.value;
 const eventOf = (log) => log.decoded?.method_call?.split('(')[0] || '';
@@ -34,7 +45,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 1, cutoffBlock: CONFIG.deploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], metricsHistory: [] };
+  return { version: 2, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -45,17 +56,19 @@ export function hydrate(raw) {
     gons: new Map(Object.entries(state.gons || {}).map(([k, v]) => [k, BigInt(v)])),
     earned: new Map(Object.entries(state.earned || {}).map(([k, v]) => [k, BigInt(v)])),
     wallets: new Map(Object.entries(state.wallets || {})), seen: new Set(state.seen || []),
+    winNetCutoffBlock: state.winNetCutoffBlock || CONFIG.winNetDeploymentBlock - 1,
+    winNetWallets: new Map(Object.entries(state.winNetWallets || {})), winNetSeen: new Set(state.winNetSeen || []), winNetActivity: state.winNetActivity || [],
   };
 }
 
 export function serialize(state) {
   return {
-    version: 1, cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt,
+    version: 2, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
     totalSupply: state.totalSupply.toString(), gpf: state.gpf.toString(),
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
     wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
-    seen: [...state.seen].slice(-5000), metricsHistory: (state.metricsHistory || []).slice(-1200),
+    seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), metricsHistory: (state.metricsHistory || []).slice(-1200),
   };
 }
 
@@ -66,6 +79,8 @@ function wallet(state, address) {
 }
 
 function addBig(obj, field, amount) { obj[field] = (BigInt(obj[field] || 0) + amount).toString(); }
+const dataUint = (data = '0x', index = 0) => BigInt(`0x${data.slice(2 + index * 64, 2 + (index + 1) * 64) || '0'}`);
+const eventAddress = (topic = '') => topic ? `0x${topic.slice(-40)}` : null;
 
 export function applyLogs(state, logs) {
   const ordered = logs.filter((l) => !state.seen.has(idOf(l))).sort(cmp);
@@ -105,6 +120,30 @@ export function applyLogs(state, logs) {
   return state;
 }
 
+export function applyWinNetLogs(state, logs) {
+  const ordered = logs.filter((log) => !state.winNetSeen.has(idOf(log))).sort(cmp);
+  for (const log of ordered) {
+    const id = idOf(log), topic = lower(log.topics?.[0]), actor = eventAddress(log.topics?.[1]);
+    state.winNetSeen.add(id); state.winNetCutoffBlock = Math.max(state.winNetCutoffBlock, log.block_number);
+    if (!actor || !Object.values(WINNET_TOPICS).includes(topic)) continue;
+    const key = lower(actor);
+    if (!state.winNetWallets.has(key)) state.winNetWallets.set(key, { address: actor, principal: '0', entered: '0', exited: '0', prizes: '0', penalties: '0', entries: 0, exits: 0, lastActive: null });
+    const wallet = state.winNetWallets.get(key); let type = null, amount = 0n;
+    if (topic === WINNET_TOPICS.entered) { amount = dataUint(log.data, 1); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
+    else if (topic === WINNET_TOPICS.enteredWithNet) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
+    else if (topic === WINNET_TOPICS.exited || topic === WINNET_TOPICS.exitedToUsdg) { amount = dataUint(log.data, 0); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'exited', amount); wallet.exits += 1; type = 'WinNET Exit'; }
+    else if (topic === WINNET_TOPICS.prizePaid) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); type = 'WinNET Prize'; }
+    else if (topic === WINNET_TOPICS.earlyUnlocked) { amount = dataUint(log.data, 1); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'penalties', amount); type = 'WinNET Penalty'; }
+    else if (topic === WINNET_TOPICS.fullExit) { wallet.principal = '0'; type = 'WinNET Full Exit'; }
+    if (type) {
+      wallet.lastActive = log.block_timestamp;
+      state.winNetActivity.unshift({ id, type, actor, amount: amount.toString(), block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
+    }
+  }
+  state.winNetActivity = state.winNetActivity.sort((a, b) => b.block - a.block).slice(0, 1500);
+  return state;
+}
+
 export function viewModel(state) {
   const rows = new Set([...state.wallets.keys(), ...state.gons.keys()]);
   const stakers = [...rows].filter((a) => a !== lower(CONFIG.staking)).map((address) => {
@@ -117,7 +156,8 @@ export function viewModel(state) {
   const activity24h = state.activity.filter((a) => a.timestamp && new Date(a.timestamp).getTime() >= since);
   const adds24h = activity24h.filter((a) => a.type === 'Staked').reduce((n, a) => n + BigInt(a.amount), 0n);
   const removals24h = activity24h.filter((a) => a.type === 'Unstaked').reduce((n, a) => n + BigInt(a.amount), 0n);
-  return { stakers, activity: state.activity, totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt };
+  const winNetStakers = [...(state.winNetWallets || new Map()).values()].map((wallet) => ({ ...wallet, balance: wallet.principal, added: wallet.entered, removed: (BigInt(wallet.exited || 0) + BigInt(wallet.penalties || 0)).toString(), rewards: wallet.prizes, stakes: wallet.entries, unstakes: wallet.exits, venue: 'WinNET' }));
+  return { stakers, winNetStakers, activity: state.activity, winNetActivity: state.winNetActivity || [], totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt };
 }
 
 async function request(url, attempts = 6) {
