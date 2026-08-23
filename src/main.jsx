@@ -8,6 +8,10 @@ import './styles.css';
 const UNIT = 10n ** 9n;
 const WAD = 10n ** 18n;
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'liquidUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'morphoAssets', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'polRfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'backingPerToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
+const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
 function amount(raw, max = 4) {
   const value = BigInt(raw || 0), whole = value / UNIT, fraction = (value % UNIT).toString().padStart(9, '0').slice(0, max).replace(/0+$/, '');
@@ -17,6 +21,7 @@ function wadAmount(raw, max = 2) {
   if (raw == null) return '—'; const value = BigInt(raw), whole = value / WAD, fraction = (value % WAD).toString().padStart(18, '0').slice(0, max).replace(/0+$/, '');
   return `${Number(whole).toLocaleString()}${fraction ? `.${fraction}` : ''}`;
 }
+const usd = (value) => value == null ? '—' : `$${Math.round(value).toLocaleString()}`;
 const short = (a) => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Protocol';
 const when = (date) => date ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'UTC' }).format(new Date(date)) + ' UTC' : '—';
 const ago = (date) => { if (!date) return '—'; const s = Math.max(0, (Date.now() - new Date(date).getTime()) / 1000); return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`; };
@@ -31,7 +36,7 @@ function Address({ value }) { return <a className="address" href={`${CONFIG.expl
 
 function App() {
   const [state, setState] = useState(null), [head, setHead] = useState(null), [status, setStatus] = useState('Loading historical ledger…'), [error, setError] = useState('');
-  const [treasury, setTreasury] = useState(null);
+  const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
   const refresh = async (base, quiet = false) => {
     try {
@@ -56,14 +61,28 @@ function App() {
   }, []);
   useEffect(() => {
     let alive = true;
-    const loadTreasury = async () => {
+    const loadFund = async () => {
       try {
         const names = ['rfv', 'liquidUsdg', 'morphoAssets', 'polRfv', 'backingPerToken'];
-        const values = await Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName })));
-        if (alive) setTreasury(Object.fromEntries(names.map((name, i) => [name, values[i].toString()])));
-      } catch { if (alive) setTreasury(null); }
+        const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
+        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse] = await Promise.all([
+          Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName }))),
+          publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'totalSupply' }),
+          publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
+          publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
+          Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
+          fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`).then((r) => r.ok ? r.json() : null).catch(() => null),
+        ]);
+        const treasury = Object.fromEntries(names.map((name, i) => [name, values[i].toString()]));
+        const rwaSleeveUsd = Array.isArray(sleeveResponse) ? sleeveResponse.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0) : null;
+        const supplyNet = Number(totalSupply) / 1e9, stakedNet = Number(totalStaked) / 1e9, price = Number(priceWad) / 1e18;
+        const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
+        const circulatingNet = Math.max(0, supplyNet - excludedNet);
+        const onchainRfv = Number(values[0]) / 1e18;
+        if (alive) setFund({ treasury, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+      } catch { if (alive) setFund(null); }
     };
-    loadTreasury(); const timer = setInterval(loadTreasury, 60_000);
+    loadFund(); const timer = setInterval(loadFund, 60_000);
     return () => { alive = false; clearInterval(timer); };
   }, []);
   const data = useMemo(() => state ? viewModel(state) : null, [state]);
@@ -88,7 +107,10 @@ function App() {
       <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub="Current holder balances" />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" />
-      <Readout icon={Coins} label="Treasury RFV" value={treasury ? `${wadAmount(treasury.rfv)} USDG` : 'Loading…'} sub={treasury ? `${wadAmount(treasury.liquidUsdg)} liquid · ${wadAmount(treasury.morphoAssets)} Morpho · ${wadAmount(treasury.polRfv)} POL` : 'Liquid + haircut Morpho + POL'} />
+      <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve · team-custodied` : 'RFV + team-custodied Sleeve'} />
+      <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} />
+      <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" />
+      <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} />
       <Readout icon={Users} label="Staking addresses" value={data.stakers.filter((r) => BigInt(r.balance) > 0n).length.toLocaleString()} sub={`${data.stakers.length.toLocaleString()} lifetime participants`} />
       <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
