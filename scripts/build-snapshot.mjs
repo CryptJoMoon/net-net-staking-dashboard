@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createPublicClient, http } from 'viem';
-import { CONFIG, applyLogs, emptyState, fetchHistoricalLogs, fetchLogs, hydrate, latestBlock, serialize, viewModel } from '../src/indexer.js';
+import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchLogs, hydrate, latestBlock, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
@@ -76,19 +76,22 @@ const stopAt = state.cutoffBlock;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const historical = !previous || Number(previous.cutoffBlock || 0) < CONFIG.deploymentBlock;
-const [staking, sNet] = await Promise.all(historical ? [
+const mainLogs = historical ? [
   fetchHistoricalLogs(CONFIG.staking, stopAt + 1, cutoff, progress),
   fetchHistoricalLogs(CONFIG.sNet, stopAt + 1, cutoff, progress),
 ] : [
   fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
   fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
-]);
+];
+const [staking, sNet, winNet] = await Promise.all([...mainLogs, fetchLogs(CONFIG.winNet, { stopAt: state.winNetCutoffBlock, cutoff, onProgress: progress })]);
 applyLogs(state, [...staking, ...sNet]);
+applyWinNetLogs(state, winNet);
 state.cutoffBlock = cutoff;
+state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
 try {
   const point = await collectMetrics(state);
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
-console.log(`Saved ${staking.length + sNet.length} new logs at block ${cutoff}`);
+console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length} WinNET logs at block ${cutoff}`);
