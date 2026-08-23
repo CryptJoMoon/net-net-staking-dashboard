@@ -4,6 +4,7 @@ export const CONFIG = {
   rpc: 'https://rpc.mainnet.chain.robinhood.com',
   staking: '0xB078cc304A0B264C5F3680DC0488954ACcd02E87',
   sNet: '0xb773ec2c326b7f98a5a83fc098825492f020a4c7',
+  treasury: '0x04822Ea321A0DEE6F40656172F29312104855d66',
   deploymentBlock: 11439688,
   decimals: 9,
 };
@@ -104,7 +105,11 @@ export function viewModel(state) {
   }).filter((w) => BigInt(w.added) || BigInt(w.removed) || BigInt(w.balance)).sort((a, b) => BigInt(a.balance) === BigInt(b.balance) ? 0 : BigInt(a.balance) > BigInt(b.balance) ? -1 : 1);
   const totalStaked = stakers.reduce((n, w) => n + BigInt(w.balance), 0n);
   const totalRewards = stakers.reduce((n, w) => n + BigInt(w.rewards), 0n);
-  return { stakers, activity: state.activity, totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt };
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const activity24h = state.activity.filter((a) => a.timestamp && new Date(a.timestamp).getTime() >= since);
+  const adds24h = activity24h.filter((a) => a.type === 'Staked').reduce((n, a) => n + BigInt(a.amount), 0n);
+  const removals24h = activity24h.filter((a) => a.type === 'Unstaked').reduce((n, a) => n + BigInt(a.amount), 0n);
+  return { stakers, activity: state.activity, totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, indexedAt: state.indexedAt };
 }
 
 async function request(url, attempts = 6) {
