@@ -39,7 +39,7 @@ async function fetchHolderWallets(token) {
   return { wallets, excluded };
 }
 
-async function collectMetrics(state) {
+async function collectMetrics(state, { classifyHolders = true } = {}) {
   const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
   const [rfv, supply, staked, priceWad, excludedBalances, sleeve] = await Promise.all([
     client.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName: 'rfv' }),
@@ -54,12 +54,14 @@ async function collectMetrics(state) {
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
   let holderMetrics = null;
-  try {
-    const netHolders = await fetchHolderWallets(CONFIG.net);
-    const sNetHolders = await fetchHolderWallets(CONFIG.sNet);
-    const allWallets = new Set([...netHolders.wallets, ...sNetHolders.wallets]);
-    holderMetrics = { walletHolderCount: allWallets.size, walletStakerCount: sNetHolders.wallets.size, excludedHolderAddresses: [...new Set([...netHolders.excluded, ...sNetHolders.excluded])] };
-  } catch (error) { console.warn(`Holder classification fallback: ${error.message}`); }
+  if (classifyHolders) {
+    try {
+      const netHolders = await fetchHolderWallets(CONFIG.net);
+      const sNetHolders = await fetchHolderWallets(CONFIG.sNet);
+      const allWallets = new Set([...netHolders.wallets, ...sNetHolders.wallets]);
+      holderMetrics = { walletHolderCount: allWallets.size, walletStakerCount: sNetHolders.wallets.size, excludedHolderAddresses: [...new Set([...netHolders.excluded, ...sNetHolders.excluded])] };
+    } catch (error) { console.warn(`Holder classification fallback: ${error.message}`); }
+  } else console.log('Deferring holder classification until after the WinNET checkpoint');
   const supplyNet = Number(supply) / 1e9, stakedNet = Number(staked) / 1e9, price = Number(priceWad) / 1e18;
   const circulatingNet = Math.max(0, supplyNet - excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0));
   const vm = viewModel(state), onchainRfv = Number(rfv) / 1e18;
@@ -95,7 +97,7 @@ state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
 try {
-  const point = await collectMetrics(state);
+  const point = await collectMetrics(state, { classifyHolders: !needsWinNetBackfill });
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
