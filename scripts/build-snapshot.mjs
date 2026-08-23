@@ -85,7 +85,7 @@ const mainLogs = historical ? [
   fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
   fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
 ];
-const needsWinNetBackfill = !previous || Number(previous.version || 1) < 3 || !previous.winNetCutoffBlock;
+const needsWinNetBackfill = !previous || Number(previous.version || 1) < 4 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
   state.winNetCutoffBlock = CONFIG.winNetDeploymentBlock - 1;
   state.winNetWallets = new Map();
