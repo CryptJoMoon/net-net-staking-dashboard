@@ -180,6 +180,11 @@ function App() {
   const walletStakerCount = latestMetrics?.walletStakerCount || activeStakers;
   const addressStakingPct = walletHolderCount > 0 ? walletStakerCount / walletHolderCount * 100 : null;
   const winNetParticipants = (data.winNetStakers || []).filter((row) => BigInt(row.balance) > 0n).length;
+  const lotteryWinners = (data.winNetStakers || []).filter((row) => (row.lotteryWins || 0) > 0).length;
+  const lotteryPayoutCount = (data.winNetStakers || []).reduce((sum, row) => sum + (row.lotteryWins || 0), 0);
+  const lotteryPayouts = (data.winNetStakers || []).reduce((sum, row) => sum + BigInt(row.rewards || 0), 0n);
+  const lotteryPayouts24h = (data.winNetActivity || []).filter((event) => event.type === 'WinNET Prize' && event.timestamp && Date.now() - new Date(event.timestamp).getTime() <= 24 * 60 * 60 * 1000);
+  const lotteryPayoutAmount24h = lotteryPayouts24h.reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
@@ -198,7 +203,8 @@ function App() {
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
       <Readout icon={Users} label="Staking addresses" value={walletStakerCount.toLocaleString()} sub={walletHolderCount ? `${walletHolderCount.toLocaleString()} unique NET/sNET wallets · ${addressStakingPct.toFixed(1)}% staking · contracts/LP/infra excluded` : `${data.stakers.length.toLocaleString()} lifetime participants · wallet filter indexing`} change={change24h(walletStakerCount, baseline24h?.activeStakers)} />
       <Readout icon={Users} label="Direct wallet stake" value={stakeDistribution ? `${amount(stakeDistribution.total, 2)} sNET` : 'Loading…'} sub={stakeDistribution ? `${stakeDistribution.count.toLocaleString()} active wallet positions · contracts excluded` : 'Wallet-only staking balance'} />
-      <Readout icon={Coins} label="Pooled / wrapped stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET ${amount(venueStake.winNet, 2)} · ${winNetParticipants.toLocaleString()} participants · wsNET ${amount(venueStake.wsNet, 2)}`} />
+      <Readout icon={Coins} label="Contract-held stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET lottery ${amount(venueStake.winNet, 2)} · ${winNetParticipants.toLocaleString()} participants · wsNET wrapper ${amount(venueStake.wsNet, 2)}`} />
+      <Readout icon={Coins} label="WinNET lottery payouts" value={`${amount(lotteryPayouts, 2)} NET`} sub={`${fund?.price > 0 ? usd(Number(lotteryPayouts) / 1e9 * fund.price) : '—'} current value · ${lotteryPayoutCount.toLocaleString()} payouts · ${lotteryWinners.toLocaleString()} winners`} change={{ text: lotteryPayouts24h.length ? `24h +${amount(lotteryPayoutAmount24h, 2)} NET · ${lotteryPayouts24h.length} payout${lotteryPayouts24h.length === 1 ? '' : 's'}` : '24h no lottery payout', tone: lotteryPayouts24h.length ? 'positive' : 'idle' }} />
       <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" change={change24h(Number(data.totalRewards) / 1e9, baseline24h?.totalRewards)} />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
     </div>
