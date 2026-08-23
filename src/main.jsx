@@ -29,8 +29,8 @@ const ago = (date) => { if (!date) return '—'; const s = Math.max(0, (Date.now
 function Window({ title, children, className = '' }) {
   return <section className={`window ${className}`}><div className="titlebar"><span>{title}</span><span className="glyphs"><i>_</i><i>□</i></span></div>{children}</section>;
 }
-function Readout({ label, value, sub, icon: Icon }) {
-  return <div className="readout">{Icon && <Icon size={15} />}<div><label>{label}</label><strong>{value}</strong>{sub && <small>{sub}</small>}</div></div>;
+function Readout({ label, value, sub, change, icon: Icon }) {
+  return <div className="readout">{Icon && <Icon size={15} />}<div><label>{label}</label><strong>{value}</strong>{sub && <small>{sub}</small>}{change && <em className={`readout-change ${change.tone || ''}`}>{change.text}</em>}</div></div>;
 }
 function Address({ value }) { return <a className="address" href={`${CONFIG.explorer}/address/${value}`} target="_blank" rel="noreferrer" title={value}>{short(value)} <ExternalLink size={10} /></a>; }
 
@@ -86,6 +86,16 @@ function App() {
     return () => { alive = false; clearInterval(timer); };
   }, []);
   const data = useMemo(() => state ? viewModel(state) : null, [state]);
+  const baseline24h = useMemo(() => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
+  }, [state]);
+  const change24h = (current, previous, formatter = (n) => Math.round(Math.abs(n)).toLocaleString()) => {
+    if (current == null) return null;
+    if (previous == null) return { text: '24h baseline building', tone: 'idle' };
+    const difference = current - previous, pct = previous !== 0 ? difference / Math.abs(previous) * 100 : null;
+    return { text: `24h ${difference >= 0 ? '+' : '−'}${formatter(difference)}${pct == null ? '' : ` (${difference >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(1)}%)`}`, tone: difference > 0 ? 'positive' : difference < 0 ? 'negative' : 'idle' };
+  };
   const rows = useMemo(() => {
     if (!data) return []; const q = query.toLowerCase().trim();
     return data.stakers.filter((r) => !q || r.address.toLowerCase().includes(q)).sort((a, b) => {
@@ -104,15 +114,16 @@ function App() {
       {error && <div className="notice">{error}</div>}
     </Window>
     <div className="stats">
-      <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub="Current holder balances" />
+      <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub="Current holder balances" change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" />
-      <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve · team-custodied` : 'RFV + team-custodied Sleeve'} />
-      <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} />
-      <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" />
-      <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} />
-      <Readout icon={Users} label="Staking addresses" value={data.stakers.filter((r) => BigInt(r.balance) > 0n).length.toLocaleString()} sub={`${data.stakers.length.toLocaleString()} lifetime participants`} />
-      <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" />
+      <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve · team-custodied` : 'RFV + team-custodied Sleeve'} change={change24h(fund?.trueRfvUsd, baseline24h?.trueRfvUsd, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
+      <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} change={change24h(fund?.circulatingMarketCap, baseline24h?.circulatingMarketCap, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
+      <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
+      <Readout icon={Activity} label="Market price" value={fund?.price > 0 ? `${fund.price.toFixed(4)} USDG` : 'Loading…'} sub="One-hour NET/USDG TWAP" change={change24h(fund?.price > 0 ? fund.price : null, baseline24h?.price, (n) => Math.abs(n).toFixed(4))} />
+      <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
+      <Readout icon={Users} label="Staking addresses" value={data.stakers.filter((r) => BigInt(r.balance) > 0n).length.toLocaleString()} sub={`${data.stakers.length.toLocaleString()} lifetime participants`} change={change24h(data.stakers.filter((r) => BigInt(r.balance) > 0n).length, baseline24h?.activeStakers)} />
+      <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" change={change24h(Number(data.totalRewards) / 1e9, baseline24h?.totalRewards)} />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
     </div>
     <div className="ticker"><div><span>CONTRACT</span> {short(CONFIG.staking)} <b>◆</b> <span>NETWORK</span> ROBINHOOD CHAIN <b>◆</b> <span>UPDATED</span> {when(data.indexedAt)} <b>◆</b> <span>HEAD</span> #{head?.toLocaleString() || '—'}</div></div>
