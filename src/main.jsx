@@ -11,10 +11,12 @@ const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', i
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
 const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
+const WINNET_DRAW_CONTROLLER = '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70';
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
@@ -101,13 +103,14 @@ function App() {
       try {
         const names = ['rfv', 'liquidUsdg', 'morphoAssets', 'polRfv', 'backingPerToken'];
         const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
-        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse] = await Promise.all([
+        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse, playingTonight] = await Promise.all([
           Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName }))),
           publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'totalSupply' }),
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
           publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
           Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
           fetchSleeveBalances(),
+          publicClient.readContract({ address: WINNET_DRAW_CONTROLLER, abi: drawControllerAbi, functionName: 'treeSize' }).catch(() => null),
         ]);
         const treasury = Object.fromEntries(names.map((name, i) => [name, values[i].toString()]));
         const liveSleeveValue = Array.isArray(sleeveResponse) ? sleeveValue(sleeveResponse) : null;
@@ -117,7 +120,7 @@ function App() {
         const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
         const circulatingNet = Math.max(0, supplyNet - excludedNet);
         const onchainRfv = Number(values[0]) / 1e18;
-        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, playingTonight: playingTonight == null ? null : Number(playingTonight), circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
       } catch { if (alive) setFund(null); }
     };
     loadFund(); const timer = setInterval(loadFund, 60_000);
@@ -203,8 +206,8 @@ function App() {
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
       <Readout icon={Users} label="Staking addresses" value={walletStakerCount.toLocaleString()} sub={walletHolderCount ? `${walletHolderCount.toLocaleString()} unique NET/sNET wallets · ${addressStakingPct.toFixed(1)}% staking · contracts/LP/infra excluded` : `${data.stakers.length.toLocaleString()} lifetime participants · wallet filter indexing`} change={change24h(walletStakerCount, baseline24h?.activeStakers)} />
       <Readout icon={Users} label="Direct wallet stake" value={stakeDistribution ? `${amount(stakeDistribution.total, 2)} sNET` : 'Loading…'} sub={stakeDistribution ? `${stakeDistribution.count.toLocaleString()} active wallet positions · contracts excluded` : 'Wallet-only staking balance'} />
-      <Readout icon={Coins} label="Contract-held stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET lottery ${amount(venueStake.winNet, 2)} · ${winNetParticipants.toLocaleString()} participants · wsNET wrapper ${amount(venueStake.wsNet, 2)}`} />
-      <Readout icon={Coins} label="WinNET lottery payouts" value={`${amount(lotteryPayouts, 2)} NET`} sub={`${fund?.price > 0 ? usd(Number(lotteryPayouts) / 1e9 * fund.price) : '—'} current value · ${lotteryPayoutCount.toLocaleString()} payouts · ${lotteryWinners.toLocaleString()} winners`} change={{ text: lotteryPayouts24h.length ? `24h +${amount(lotteryPayoutAmount24h, 2)} NET · ${lotteryPayouts24h.length} payout${lotteryPayouts24h.length === 1 ? '' : 's'}` : '24h no lottery payout', tone: lotteryPayouts24h.length ? 'positive' : 'idle' }} />
+      <Readout icon={Coins} label="Contract-held stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET lottery ${amount(venueStake.winNet, 2)} · ${winNetParticipants.toLocaleString()} active principal wallets${fund?.playingTonight != null ? ` · ${fund.playingTonight.toLocaleString()} playing tonight` : ''} · wsNET wrapper ${amount(venueStake.wsNet, 2)}`} />
+      <Readout icon={Coins} label="WinNET jackpot payouts" value={`${amount(lotteryPayouts, 2)} NET`} sub={`${fund?.price > 0 ? usd(Number(lotteryPayouts) / 1e9 * fund.price) : '—'} current value · ${lotteryPayoutCount.toLocaleString()} NET jackpots · ${lotteryWinners.toLocaleString()} unique jackpot winners`} change={{ text: lotteryPayouts24h.length ? `24h +${amount(lotteryPayoutAmount24h, 2)} NET · ${lotteryPayouts24h.length} payout${lotteryPayouts24h.length === 1 ? '' : 's'}` : '24h no lottery payout', tone: lotteryPayouts24h.length ? 'positive' : 'idle' }} />
       <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" change={change24h(Number(data.totalRewards) / 1e9, baseline24h?.totalRewards)} />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
     </div>
