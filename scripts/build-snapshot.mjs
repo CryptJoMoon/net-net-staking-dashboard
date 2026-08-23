@@ -12,6 +12,17 @@ const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4,
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function isUserWalletAddress(address) {
+  if (!address?.is_contract) return true;
+  if (address.proxy_type?.toLowerCase() === 'eip7702') return true;
+  const identity = [
+    address.name,
+    ...(address.implementations || []).flatMap((implementation) => [implementation.name, implementation.address_hash]),
+    ...(address.public_tags || []).flatMap((tag) => [tag.name, tag.display_name, tag.label]),
+  ].filter(Boolean).join(' ');
+  return /(?:smart.?account|wallet|ambire|safe|argent|kernel|light.?account|simple.?account|coinbase.?smart)/i.test(identity);
+}
+
 async function fetchHolderWallets(token) {
   const wallets = new Set(), excluded = new Set(knownInfra);
   let next = null;
@@ -30,7 +41,7 @@ async function fetchHolderWallets(token) {
     for (const item of page.items) {
       const address = item.address?.hash?.toLowerCase();
       if (!address) continue;
-      if (item.address.is_contract || knownInfra.has(address)) excluded.add(address);
+      if (knownInfra.has(address) || !isUserWalletAddress(item.address)) excluded.add(address);
       else wallets.add(address);
     }
     next = page.next_page_params || null;
