@@ -107,6 +107,7 @@ function App() {
   useEffect(() => setPage(1), [query, sort]);
   if (!data) return <main className="desktop"><div className="boot">NET STAKING LEDGER<br/><span>Reconstructing shareholder records…</span></div></main>;
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
+  const netFlow24h = BigInt(data.adds24h) - BigInt(data.removals24h);
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
@@ -117,6 +118,7 @@ function App() {
       <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub="Current holder balances" change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" />
+      <Readout icon={netFlow24h >= 0n ? ArrowDownToLine : ArrowUpFromLine} label="24-hour net flow" value={`${netFlow24h >= 0n ? '+' : '−'}${amount(netFlow24h >= 0n ? netFlow24h : -netFlow24h, 2)} NET`} sub="Adds minus removals" change={{ text: netFlow24h > 0n ? 'Net staking growth' : netFlow24h < 0n ? 'Net staking outflow' : 'No net change', tone: netFlow24h > 0n ? 'positive' : netFlow24h < 0n ? 'negative' : 'idle' }} />
       <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve · team-custodied` : 'RFV + team-custodied Sleeve'} change={change24h(fund?.trueRfvUsd, baseline24h?.trueRfvUsd, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} change={change24h(fund?.circulatingMarketCap, baseline24h?.circulatingMarketCap, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
