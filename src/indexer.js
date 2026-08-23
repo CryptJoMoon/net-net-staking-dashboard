@@ -45,7 +45,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 3, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
+  return { version: 4, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -63,7 +63,7 @@ export function hydrate(raw) {
 
 export function serialize(state) {
   return {
-    version: 3, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
+    version: 4, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
     totalSupply: state.totalSupply.toString(), gpf: state.gpf.toString(),
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
