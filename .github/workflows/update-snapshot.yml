@@ -29,8 +29,10 @@ jobs:
       - name: Commit changed snapshot
         run: |
           if git diff --quiet -- public/snapshot.json; then exit 0; fi
-          git config user.name "netnet-ledger-bot"
-          git config user.email "actions@users.noreply.github.com"
+          # Attribute automated data commits to the repository owner so Vercel's
+          # Git integration recognizes an authorized project contributor.
+          git config user.name "CryptJoMoon"
+          git config user.email "CryptJoMoon@users.noreply.github.com"
           git add public/snapshot.json
           git commit -m "data: update staking ledger snapshot"
           git push
