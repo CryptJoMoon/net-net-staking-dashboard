@@ -85,7 +85,7 @@ const mainLogs = historical ? [
   fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
   fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
 ];
-const needsWinNetBackfill = !previous || Number(previous.version || 1) < 2 || !previous.winNetCutoffBlock;
+const needsWinNetBackfill = !previous || Number(previous.version || 1) < 3 || !previous.winNetCutoffBlock;
 const winNetLogs = needsWinNetBackfill
   ? fetchRawHistoricalLogs(CONFIG.winNet, CONFIG.winNetDeploymentBlock, cutoff, progress)
   : fetchLogs(CONFIG.winNet, { stopAt: state.winNetCutoffBlock, cutoff, onProgress: progress });
