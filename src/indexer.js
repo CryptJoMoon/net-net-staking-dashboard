@@ -222,6 +222,38 @@ export async function fetchHistoricalLogs(address, fromBlock, toBlock, onProgres
   return (await range(fromBlock, toBlock)).map((log) => normalizeLegacy(log, address)).filter(Boolean);
 }
 
+export async function fetchRawHistoricalLogs(address, fromBlock, toBlock, onProgress) {
+  let requests = 0;
+  async function range(from, to) {
+    const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address });
+    let json;
+    for (let retry = 0; retry < 8; retry++) {
+      json = await request(`https://robinhoodchain.blockscout.com/api?${params}`); requests += 1;
+      if (!/Too many requests/i.test(json.message || json.result || '')) break;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * (retry + 1)));
+    }
+    if (json?.status === '0' && /No logs/i.test(json.message || json.result || '')) return [];
+    const items = Array.isArray(json?.result) ? json.result : [];
+    onProgress?.({ address, page: requests, count: items.length });
+    if (items.length >= 1000 && from < to) {
+      const mid = Math.floor((from + to) / 2);
+      const [older, newer] = await Promise.all([range(from, mid), range(mid + 1, to)]);
+      return [...older, ...newer];
+    }
+    if (!Array.isArray(json?.result)) throw new Error(`Unable to backfill logs for ${address}`);
+    return items;
+  }
+  return (await range(fromBlock, toBlock)).map((log) => ({
+    address,
+    block_number: Number(BigInt(log.blockNumber)),
+    block_timestamp: new Date(Number(BigInt(log.timeStamp)) * 1000).toISOString(),
+    data: log.data,
+    index: Number(BigInt(log.logIndex)),
+    topics: log.topics,
+    transaction_hash: log.transactionHash,
+  }));
+}
+
 export async function latestBlock() {
   const body = await request(`${CONFIG.api}/blocks?type=block`);
   if (!body.items?.[0]?.height) throw new Error('Unable to read the current Robinhood Chain block.');
