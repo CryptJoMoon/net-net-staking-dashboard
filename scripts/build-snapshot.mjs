@@ -9,6 +9,34 @@ const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'vi
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
+const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchHolderWallets(token) {
+  const wallets = new Set(), excluded = new Set(knownInfra);
+  let next = null;
+  do {
+    const query = next ? `?${new URLSearchParams(Object.entries(next).map(([key, value]) => [key, String(value)]))}` : '';
+    let page = null;
+    for (let attempt = 0; attempt < 4 && !page; attempt += 1) {
+      try {
+        const response = await fetch(`${CONFIG.api}/tokens/${token}/holders${query}`, { headers: { accept: 'application/json' } });
+        if (response.ok) page = await response.json();
+      } catch { /* retry transient explorer failures */ }
+      if (!page) await pause(500 * (attempt + 1));
+    }
+    if (!page?.items) throw new Error(`Unable to classify ${token} holders`);
+    for (const item of page.items) {
+      const address = item.address?.hash?.toLowerCase();
+      if (!address) continue;
+      if (item.address.is_contract || knownInfra.has(address)) excluded.add(address);
+      else wallets.add(address);
+    }
+    next = page.next_page_params || null;
+    if (next) await pause(150);
+  } while (next);
+  return { wallets, excluded };
+}
 
 async function collectMetrics(state) {
   const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
@@ -23,10 +51,18 @@ async function collectMetrics(state) {
   const liveSleeveUsd = Array.isArray(sleeve) ? sleeve.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / 10 ** Number(item.token.decimals) * Number(item.token.exchange_rate), 0) : null;
   const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.rwaSleeveUsd))?.rwaSleeveUsd;
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
+  const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
+  let holderMetrics = null;
+  try {
+    const netHolders = await fetchHolderWallets(CONFIG.net);
+    const sNetHolders = await fetchHolderWallets(CONFIG.sNet);
+    const allWallets = new Set([...netHolders.wallets, ...sNetHolders.wallets]);
+    holderMetrics = { walletHolderCount: allWallets.size, walletStakerCount: sNetHolders.wallets.size, excludedHolderAddresses: [...new Set([...netHolders.excluded, ...sNetHolders.excluded])] };
+  } catch (error) { console.warn(`Holder classification fallback: ${error.message}`); }
   const supplyNet = Number(supply) / 1e9, stakedNet = Number(staked) / 1e9, price = Number(priceWad) / 1e18;
   const circulatingNet = Math.max(0, supplyNet - excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0));
   const vm = viewModel(state), onchainRfv = Number(rfv) / 1e18;
-  return { timestamp: new Date().toISOString(), block: state.cutoffBlock, totalStaked: Number(vm.totalStaked) / 1e9, activeStakers: vm.stakers.filter((row) => BigInt(row.balance) > 0n).length, totalRewards: Number(vm.totalRewards) / 1e9, onchainRfv, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null };
+  return { timestamp: new Date().toISOString(), block: state.cutoffBlock, totalStaked: Number(vm.totalStaked) / 1e9, activeStakers: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? vm.stakers.filter((row) => BigInt(row.balance) > 0n).length, totalRewards: Number(vm.totalRewards) / 1e9, onchainRfv, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, walletHolderCount: holderMetrics?.walletHolderCount ?? previousPoint?.walletHolderCount ?? null, walletStakerCount: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? null, excludedHolderAddresses: holderMetrics?.excludedHolderAddresses ?? previousPoint?.excludedHolderAddresses ?? [...knownInfra], circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null };
 }
 
 await mkdir('public', { recursive: true });
