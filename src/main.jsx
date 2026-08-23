@@ -13,6 +13,7 @@ const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'v
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
+const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
 const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
 let snapshotSleeveFallback = null;
@@ -96,14 +97,13 @@ function App() {
       try {
         const names = ['rfv', 'liquidUsdg', 'morphoAssets', 'polRfv', 'backingPerToken'];
         const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
-        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse, tokenResponse] = await Promise.all([
+        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse] = await Promise.all([
           Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName }))),
           publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'totalSupply' }),
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
           publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
           Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
           fetchSleeveBalances(),
-          fetch(`${CONFIG.api}/tokens/${CONFIG.net}`, { cache: 'no-store', headers: { accept: 'application/json' } }).then((r) => r.ok ? r.json() : null).catch(() => null),
         ]);
         const treasury = Object.fromEntries(names.map((name, i) => [name, values[i].toString()]));
         const liveSleeveValue = Array.isArray(sleeveResponse) ? sleeveValue(sleeveResponse) : null;
@@ -113,8 +113,7 @@ function App() {
         const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
         const circulatingNet = Math.max(0, supplyNet - excludedNet);
         const onchainRfv = Number(values[0]) / 1e18;
-        const holderCount = Number(tokenResponse?.holders_count) || null;
-        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, holderCount, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
       } catch { if (alive) setFund(null); }
     };
     loadFund(); const timer = setInterval(loadFund, 60_000);
@@ -125,6 +124,8 @@ function App() {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
   }, [state]);
+  const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
+  const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())]), [latestMetrics]);
   const change24h = (current, previous, formatter = (n) => Math.round(Math.abs(n)).toLocaleString()) => {
     if (current == null) return null;
     if (previous == null) return { text: '24h baseline building', tone: 'idle' };
@@ -133,19 +134,21 @@ function App() {
   };
   const rows = useMemo(() => {
     if (!data) return []; const q = query.toLowerCase().trim();
-    return data.stakers.filter((r) => !q || r.address.toLowerCase().includes(q)).sort((a, b) => {
+    return data.stakers.filter((r) => !excludedAddresses.has(r.address.toLowerCase()) && (!q || r.address.toLowerCase().includes(q))).sort((a, b) => {
       if (sort === 'address') return a.address.localeCompare(b.address);
       const sortField = sort === 'usdValue' ? 'balance' : sort;
       const av = BigInt(a[sortField] || 0), bv = BigInt(b[sortField] || 0); return av === bv ? 0 : av > bv ? -1 : 1;
     });
-  }, [data, query, sort]);
+  }, [data, query, sort, excludedAddresses]);
   const pageSize = 25, pages = Math.max(1, Math.ceil(rows.length / pageSize)), visible = rows.slice((page - 1) * pageSize, page * pageSize);
   useEffect(() => setPage(1), [query, sort]);
   if (!data) return <main className="desktop"><div className="boot">NET STAKING LEDGER<br/><span>Reconstructing shareholder records…</span></div></main>;
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
   const netFlow24h = BigInt(data.adds24h) - BigInt(data.removals24h);
-  const activeStakers = data.stakers.filter((r) => BigInt(r.balance) > 0n).length;
-  const addressStakingPct = fund?.holderCount > 0 ? activeStakers / fund.holderCount * 100 : null;
+  const activeStakers = data.stakers.filter((r) => BigInt(r.balance) > 0n && !excludedAddresses.has(r.address.toLowerCase())).length;
+  const walletHolderCount = latestMetrics?.walletHolderCount || null;
+  const walletStakerCount = latestMetrics?.walletStakerCount || activeStakers;
+  const addressStakingPct = walletHolderCount > 0 ? walletStakerCount / walletHolderCount * 100 : null;
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
@@ -162,7 +165,7 @@ function App() {
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Market price" value={fund?.price > 0 ? `${fund.price.toFixed(4)} USDG` : 'Loading…'} sub="One-hour NET/USDG TWAP" change={change24h(fund?.price > 0 ? fund.price : null, baseline24h?.price, (n) => Math.abs(n).toFixed(4))} />
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
-      <Readout icon={Users} label="Staking addresses" value={activeStakers.toLocaleString()} sub={fund?.holderCount ? `${fund.holderCount.toLocaleString()} NET holders · ${addressStakingPct.toFixed(1)}% staking · ${data.stakers.length.toLocaleString()} lifetime participants` : `${data.stakers.length.toLocaleString()} lifetime participants · holder count loading`} change={change24h(activeStakers, baseline24h?.activeStakers)} />
+      <Readout icon={Users} label="Staking addresses" value={walletStakerCount.toLocaleString()} sub={walletHolderCount ? `${walletHolderCount.toLocaleString()} unique NET/sNET wallets · ${addressStakingPct.toFixed(1)}% staking · contracts/LP/infra excluded` : `${data.stakers.length.toLocaleString()} lifetime participants · wallet filter indexing`} change={change24h(walletStakerCount, baseline24h?.activeStakers)} />
       <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" change={change24h(Number(data.totalRewards) / 1e9, baseline24h?.totalRewards)} />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
     </div>
