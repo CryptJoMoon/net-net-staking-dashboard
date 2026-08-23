@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, ArrowDownToLine, ArrowUpFromLine, Coins, ExternalLink, RefreshCw, Search, Users } from 'lucide-react';
 import { createPublicClient, http } from 'viem';
-import { CONFIG, applyLogs, emptyState, fetchLogs, hydrate, latestBlock, viewModel } from './indexer.js';
+import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchLogs, hydrate, latestBlock, viewModel } from './indexer.js';
 import './styles.css';
 
 const UNIT = 10n ** 9n;
@@ -69,14 +69,15 @@ function Address({ value }) { return <a className="address" href={`${CONFIG.expl
 function App() {
   const [state, setState] = useState(null), [head, setHead] = useState(null), [status, setStatus] = useState('Loading historical ledger…'), [error, setError] = useState('');
   const [fund, setFund] = useState(null);
-  const [tab, setTab] = useState('stakers'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
+  const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
   const refresh = async (base, quiet = false) => {
     try {
       if (!quiet) setStatus('Checking the chain…'); setError('');
       const chainHead = await latestBlock(); setHead(chainHead);
       const confirmed = chainHead - 5, stopAt = base.cutoffBlock;
-      const [staking, sNet] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed })]);
+      const [staking, sNet, winNet] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: base.winNetCutoffBlock, cutoff: confirmed })]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
+      applyWinNetLogs(base, winNet); base.winNetCutoffBlock = confirmed;
       setState({ ...base }); setStatus('Live');
     } catch (e) { setError(e.message); setStatus('Snapshot mode'); setState({ ...base }); }
   };
@@ -148,14 +149,28 @@ function App() {
   };
   const rows = useMemo(() => {
     if (!data) return []; const q = query.toLowerCase().trim();
-    return data.stakers.filter((r) => !excludedAddresses.has(r.address.toLowerCase()) && (!q || r.address.toLowerCase().includes(q))).sort((a, b) => {
+    const direct = data.stakers.filter((row) => !excludedAddresses.has(row.address.toLowerCase())).map((row) => ({ ...row, venue: 'Direct' }));
+    const lottery = data.winNetStakers || [];
+    let source;
+    if (venue === 'direct') source = direct;
+    else if (venue === 'winnet') source = lottery;
+    else {
+      const combined = new Map();
+      for (const row of [...direct, ...lottery]) {
+        const key = row.address.toLowerCase(), current = combined.get(key);
+        if (!current) combined.set(key, { ...row });
+        else combined.set(key, { ...current, added: (BigInt(current.added || 0) + BigInt(row.added || 0)).toString(), removed: (BigInt(current.removed || 0) + BigInt(row.removed || 0)).toString(), rewards: (BigInt(current.rewards || 0) + BigInt(row.rewards || 0)).toString(), balance: (BigInt(current.balance || 0) + BigInt(row.balance || 0)).toString(), stakes: (current.stakes || 0) + (row.stakes || 0), unstakes: (current.unstakes || 0) + (row.unstakes || 0), lastActive: new Date(current.lastActive || 0) > new Date(row.lastActive || 0) ? current.lastActive : row.lastActive, venue: current.venue === row.venue ? current.venue : 'Direct + WinNET' });
+      }
+      source = [...combined.values()];
+    }
+    return source.filter((r) => !q || r.address.toLowerCase().includes(q)).sort((a, b) => {
       if (sort === 'address') return a.address.localeCompare(b.address);
       const sortField = sort === 'usdValue' ? 'balance' : sort;
       const av = BigInt(a[sortField] || 0), bv = BigInt(b[sortField] || 0); return av === bv ? 0 : av > bv ? -1 : 1;
     });
-  }, [data, query, sort, excludedAddresses]);
+  }, [data, venue, query, sort, excludedAddresses]);
   const pageSize = 25, pages = Math.max(1, Math.ceil(rows.length / pageSize)), visible = rows.slice((page - 1) * pageSize, page * pageSize);
-  useEffect(() => setPage(1), [query, sort]);
+  useEffect(() => setPage(1), [venue, query, sort]);
   if (!data) return <main className="desktop"><div className="boot">NET STAKING LEDGER<br/><span>Reconstructing shareholder records…</span></div></main>;
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
   const netFlow24h = BigInt(data.adds24h) - BigInt(data.removals24h);
@@ -163,6 +178,7 @@ function App() {
   const walletHolderCount = latestMetrics?.walletHolderCount || null;
   const walletStakerCount = latestMetrics?.walletStakerCount || activeStakers;
   const addressStakingPct = walletHolderCount > 0 ? walletStakerCount / walletHolderCount * 100 : null;
+  const winNetParticipants = (data.winNetStakers || []).filter((row) => BigInt(row.balance) > 0n).length;
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
@@ -181,14 +197,14 @@ function App() {
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
       <Readout icon={Users} label="Staking addresses" value={walletStakerCount.toLocaleString()} sub={walletHolderCount ? `${walletHolderCount.toLocaleString()} unique NET/sNET wallets · ${addressStakingPct.toFixed(1)}% staking · contracts/LP/infra excluded` : `${data.stakers.length.toLocaleString()} lifetime participants · wallet filter indexing`} change={change24h(walletStakerCount, baseline24h?.activeStakers)} />
       <Readout icon={Users} label="Direct wallet stake" value={stakeDistribution ? `${amount(stakeDistribution.total, 2)} sNET` : 'Loading…'} sub={stakeDistribution ? `${stakeDistribution.count.toLocaleString()} active wallet positions · contracts excluded` : 'Wallet-only staking balance'} />
-      <Readout icon={Coins} label="Pooled / wrapped stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET ${amount(venueStake.winNet, 2)} · wsNET ${amount(venueStake.wsNet, 2)} · not counted as individual users`} />
+      <Readout icon={Coins} label="Pooled / wrapped stake" value={`${amount(venueStake.total, 2)} sNET`} sub={`WinNET ${amount(venueStake.winNet, 2)} · ${winNetParticipants.toLocaleString()} participants · wsNET ${amount(venueStake.wsNet, 2)}`} />
       <Readout icon={Activity} label="Rewards distributed" value={`${amount(data.totalRewards, 2)} NET`} sub="Reconstructed per rebase" change={change24h(Number(data.totalRewards) / 1e9, baseline24h?.totalRewards)} />
       <Readout icon={RefreshCw} label="Indexed block" value={`#${data.cutoffBlock.toLocaleString()}`} sub={ago(data.indexedAt)} />
     </div>
     <div className="ticker"><div><span>CONTRACT</span> {short(CONFIG.staking)} <b>◆</b> <span>NETWORK</span> ROBINHOOD CHAIN <b>◆</b> <span>UPDATED</span> {when(data.indexedAt)} <b>◆</b> <span>HEAD</span> #{head?.toLocaleString() || '—'}</div></div>
     {tab === 'stakers' ? <Window title="Shareholder Register">
-      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="balance">Sort: balance</option><option value="usdValue">Sort: USD value</option><option value="rewards">Sort: rewards</option><option value="added">Sort: additions</option><option value="removed">Sort: removals</option><option value="address">Sort: address</option></select></div>
-      <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th className="num">Adds</th><th className="num">Removals</th><th className="num">Rewards</th><th className="num">sNET Balance</th><th className="num">Current USD Value</th><th className="num">Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={r.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'sNET holder'}</small></td><td className="num up">+{amount(r.added)}</td><td className="num down">−{amount(r.removed)}</td><td className="num reward">+{amount(r.rewards)}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{r.stakes} / {r.unstakes}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
+      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><div className="filters"><select value={venue} onChange={(e) => setVenue(e.target.value)}><option value="all">Venue: all</option><option value="direct">Venue: direct staking</option><option value="winnet">Venue: WinNET lottery</option></select><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="balance">Sort: balance</option><option value="usdValue">Sort: USD value</option><option value="rewards">Sort: rewards</option><option value="added">Sort: additions</option><option value="removed">Sort: removals</option><option value="address">Sort: address</option></select></div></div>
+      <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th>Venue</th><th className="num">Adds</th><th className="num">Removals</th><th className="num">Rewards</th><th className="num">Stake Balance</th><th className="num">Current USD Value</th><th className="num">Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={`${r.address}-${r.venue}`}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'Stake holder'}</small></td><td><span className={`venue ${r.venue.toLowerCase().replaceAll(' ', '-')}`}>{r.venue}</span></td><td className="num up">+{amount(r.added)}</td><td className="num down">−{amount(r.removed)}</td><td className="num reward">+{amount(r.rewards)}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{r.stakes} / {r.unstakes}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
       <div className="pager"><span>{rows.length.toLocaleString()} records</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {pages}</b><button disabled={page === pages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
     </Window> : <Window title="Complete Staking Activity">
       <div className="tablewrap"><table><thead><tr><th>Activity</th><th>Wallet / Epoch</th><th className="num">Amount</th><th>Time (UTC)</th><th className="num">Block</th></tr></thead><tbody>{data.activity.map((a) => <tr key={a.id}><td><span className={`event ${a.type.toLowerCase()}`}>{a.type === 'Staked' ? <ArrowDownToLine size={12}/> : a.type === 'Unstaked' ? <ArrowUpFromLine size={12}/> : <RefreshCw size={12}/>} {a.type}</span></td><td>{a.actor ? <Address value={a.actor}/> : `Epoch ${a.epoch}`}</td><td className={`num ${a.type === 'Unstaked' ? 'down' : 'up'}`}>{a.type === 'Unstaked' ? '−' : '+'}{amount(a.amount)} NET</td><td>{when(a.timestamp)}</td><td className="num"><a href={`${CONFIG.explorer}/tx/${a.tx}`} target="_blank" rel="noreferrer">#{a.block.toLocaleString()}</a></td></tr>)}</tbody></table></div>
