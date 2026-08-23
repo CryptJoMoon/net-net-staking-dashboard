@@ -12,7 +12,35 @@ const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'vie
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
+const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
+const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
+let snapshotSleeveFallback = null;
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchSleeveBalances() {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances?t=${Date.now()}`, { headers: { accept: 'application/json' } });
+      if (response.ok) {
+        const balances = await response.json();
+        if (Array.isArray(balances)) return balances;
+      }
+    } catch { /* retry transient explorer errors */ }
+    if (attempt < 3) await pause(600 * (attempt + 1));
+  }
+  return null;
+}
+function sleeveValue(balances) {
+  return balances.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0);
+}
+function cachedSleeveValue() {
+  const candidates = [snapshotSleeveFallback];
+  try { candidates.push(JSON.parse(localStorage.getItem(SLEEVE_CACHE_KEY))); } catch { /* unavailable or malformed cache */ }
+  return candidates.filter((item) => Number.isFinite(item?.value) && Date.now() - new Date(item.timestamp).getTime() <= SLEEVE_CACHE_MAX_AGE).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.value ?? null;
+}
+function rememberSleeveValue(value) {
+  try { localStorage.setItem(SLEEVE_CACHE_KEY, JSON.stringify({ value, timestamp: new Date().toISOString() })); } catch { /* storage can be disabled */ }
+}
 function amount(raw, max = 4) {
   const value = BigInt(raw || 0), whole = value / UNIT, fraction = (value % UNIT).toString().padStart(9, '0').slice(0, max).replace(/0+$/, '');
   return `${Number(whole).toLocaleString()}${fraction ? `.${fraction}` : ''}`;
@@ -54,6 +82,8 @@ function App() {
       let snapshot;
       try { const r = await fetch(`/snapshot.json?t=${Date.now()}`); if (!r.ok) throw new Error(); snapshot = await r.json(); }
       catch { snapshot = emptyState(); }
+      const lastSleevePoint = [...(snapshot.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.rwaSleeveUsd));
+      snapshotSleeveFallback = lastSleevePoint ? { value: lastSleevePoint.rwaSleeveUsd, timestamp: lastSleevePoint.timestamp } : null;
       if (!alive) return; const base = hydrate(snapshot); setState({ ...base }); await refresh(base);
       timer = setInterval(() => refresh(base, true), 15000);
     })();
@@ -71,15 +101,17 @@ function App() {
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
           publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
           Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
-          fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`).then((r) => r.ok ? r.json() : null).catch(() => null),
+          fetchSleeveBalances(),
         ]);
         const treasury = Object.fromEntries(names.map((name, i) => [name, values[i].toString()]));
-        const rwaSleeveUsd = Array.isArray(sleeveResponse) ? sleeveResponse.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0) : null;
+        const liveSleeveValue = Array.isArray(sleeveResponse) ? sleeveValue(sleeveResponse) : null;
+        if (liveSleeveValue != null) rememberSleeveValue(liveSleeveValue);
+        const rwaSleeveUsd = liveSleeveValue ?? cachedSleeveValue();
         const supplyNet = Number(totalSupply) / 1e9, stakedNet = Number(totalStaked) / 1e9, price = Number(priceWad) / 1e18;
         const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
         const circulatingNet = Math.max(0, supplyNet - excludedNet);
         const onchainRfv = Number(values[0]) / 1e18;
-        if (alive) setFund({ treasury, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
       } catch { if (alive) setFund(null); }
     };
     loadFund(); const timer = setInterval(loadFund, 60_000);
@@ -119,7 +151,7 @@ function App() {
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" />
       <Readout icon={netFlow24h >= 0n ? ArrowDownToLine : ArrowUpFromLine} label="24-hour net flow" value={`${netFlow24h >= 0n ? '+' : '−'}${amount(netFlow24h >= 0n ? netFlow24h : -netFlow24h, 2)} NET`} sub="Adds minus removals" change={{ text: netFlow24h > 0n ? 'Net staking growth' : netFlow24h < 0n ? 'Net staking outflow' : 'No net change', tone: netFlow24h > 0n ? 'positive' : netFlow24h < 0n ? 'negative' : 'idle' }} />
-      <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve · team-custodied` : 'RFV + team-custodied Sleeve'} change={change24h(fund?.trueRfvUsd, baseline24h?.trueRfvUsd, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
+      <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve${fund.rwaSleeveCached ? ' · last known mark' : ''} · team-custodied` : 'RFV + team-custodied Sleeve'} change={change24h(fund?.trueRfvUsd, baseline24h?.trueRfvUsd, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} change={change24h(fund?.circulatingMarketCap, baseline24h?.circulatingMarketCap, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Market price" value={fund?.price > 0 ? `${fund.price.toFixed(4)} USDG` : 'Loading…'} sub="One-hour NET/USDG TWAP" change={change24h(fund?.price > 0 ? fund.price : null, baseline24h?.price, (n) => Math.abs(n).toFixed(4))} />
