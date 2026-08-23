@@ -15,6 +15,7 @@ const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4
 const DISCLOSED_SLEEVE_USD = 863_750;
 const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
+const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
 const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
@@ -128,7 +129,7 @@ function App() {
     return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
   }, [state]);
   const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
-  const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())]), [latestMetrics]);
+  const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())].filter((address) => !confirmedUserWallets.has(address))), [latestMetrics]);
   const stakeDistribution = useMemo(() => {
     const balances = (data?.stakers || []).filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => BigInt(row.balance)).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     if (!balances.length) return null;
