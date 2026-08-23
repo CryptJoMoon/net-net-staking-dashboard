@@ -34,7 +34,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 1, cutoffBlock: CONFIG.deploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [] };
+  return { version: 1, cutoffBlock: CONFIG.deploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -55,7 +55,7 @@ export function serialize(state) {
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
     wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
-    seen: [...state.seen].slice(-5000),
+    seen: [...state.seen].slice(-5000), metricsHistory: (state.metricsHistory || []).slice(-1200),
   };
 }
 
