@@ -45,7 +45,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 2, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
+  return { version: 3, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -63,7 +63,7 @@ export function hydrate(raw) {
 
 export function serialize(state) {
   return {
-    version: 2, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
+    version: 3, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
     totalSupply: state.totalSupply.toString(), gpf: state.gpf.toString(),
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
@@ -127,12 +127,12 @@ export function applyWinNetLogs(state, logs) {
     state.winNetSeen.add(id); state.winNetCutoffBlock = Math.max(state.winNetCutoffBlock, log.block_number);
     if (!actor || !Object.values(WINNET_TOPICS).includes(topic)) continue;
     const key = lower(actor);
-    if (!state.winNetWallets.has(key)) state.winNetWallets.set(key, { address: actor, principal: '0', entered: '0', exited: '0', prizes: '0', penalties: '0', entries: 0, exits: 0, lastActive: null });
+    if (!state.winNetWallets.has(key)) state.winNetWallets.set(key, { address: actor, principal: '0', entered: '0', exited: '0', prizes: '0', penalties: '0', wins: 0, entries: 0, exits: 0, lastActive: null });
     const wallet = state.winNetWallets.get(key); let type = null, amount = 0n;
     if (topic === WINNET_TOPICS.entered) { amount = dataUint(log.data, 1); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
     else if (topic === WINNET_TOPICS.enteredWithNet) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
     else if (topic === WINNET_TOPICS.exited || topic === WINNET_TOPICS.exitedToUsdg) { amount = dataUint(log.data, 0); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'exited', amount); wallet.exits += 1; type = 'WinNET Exit'; }
-    else if (topic === WINNET_TOPICS.prizePaid) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); type = 'WinNET Prize'; }
+    else if (topic === WINNET_TOPICS.prizePaid) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; type = 'WinNET Prize'; }
     else if (topic === WINNET_TOPICS.earlyUnlocked) { amount = dataUint(log.data, 1); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'penalties', amount); type = 'WinNET Penalty'; }
     else if (topic === WINNET_TOPICS.fullExit) { wallet.principal = '0'; type = 'WinNET Full Exit'; }
     if (type) {
@@ -156,7 +156,7 @@ export function viewModel(state) {
   const activity24h = state.activity.filter((a) => a.timestamp && new Date(a.timestamp).getTime() >= since);
   const adds24h = activity24h.filter((a) => a.type === 'Staked').reduce((n, a) => n + BigInt(a.amount), 0n);
   const removals24h = activity24h.filter((a) => a.type === 'Unstaked').reduce((n, a) => n + BigInt(a.amount), 0n);
-  const winNetStakers = [...(state.winNetWallets || new Map()).values()].map((wallet) => ({ ...wallet, balance: wallet.principal, added: wallet.entered, removed: (BigInt(wallet.exited || 0) + BigInt(wallet.penalties || 0)).toString(), rewards: wallet.prizes, stakes: wallet.entries, unstakes: wallet.exits, venue: 'WinNET' }));
+  const winNetStakers = [...(state.winNetWallets || new Map()).values()].map((wallet) => ({ ...wallet, balance: wallet.principal, added: wallet.entered, removed: (BigInt(wallet.exited || 0) + BigInt(wallet.penalties || 0)).toString(), rewards: wallet.prizes, lotteryWins: wallet.wins || 0, stakes: wallet.entries, unstakes: wallet.exits, venue: 'WinNET' }));
   return { stakers, winNetStakers, activity: state.activity, winNetActivity: state.winNetActivity || [], totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt };
 }
 
