@@ -21,7 +21,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchSleeveBalances() {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      const response = await fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances?t=${Date.now()}`, { headers: { accept: 'application/json' } });
+      const response = await fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`, { cache: 'no-store', headers: { accept: 'application/json' } });
       if (response.ok) {
         const balances = await response.json();
         if (Array.isArray(balances)) return balances;
