@@ -126,6 +126,13 @@ function App() {
   }, [state]);
   const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
   const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())]), [latestMetrics]);
+  const stakeDistribution = useMemo(() => {
+    const balances = (data?.stakers || []).filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => BigInt(row.balance)).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    if (!balances.length) return null;
+    const total = balances.reduce((sum, value) => sum + value, 0n), middle = Math.floor(balances.length / 2);
+    const median = balances.length % 2 ? balances[middle] : (balances[middle - 1] + balances[middle]) / 2n;
+    return { median, average: total / BigInt(balances.length) };
+  }, [data, excludedAddresses]);
   const change24h = (current, previous, formatter = (n) => Math.round(Math.abs(n)).toLocaleString()) => {
     if (current == null) return null;
     if (previous == null) return { text: '24h baseline building', tone: 'idle' };
@@ -156,7 +163,7 @@ function App() {
       {error && <div className="notice">{error}</div>}
     </Window>
     <div className="stats">
-      <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub="Current holder balances" change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
+      <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub={stakeDistribution ? `Median ${amount(stakeDistribution.median, 2)} NET · Average ${amount(stakeDistribution.average, 2)} NET` : 'Current holder balances'} change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" />
       <Readout icon={netFlow24h >= 0n ? ArrowDownToLine : ArrowUpFromLine} label="24-hour net flow" value={`${netFlow24h >= 0n ? '+' : '−'}${amount(netFlow24h >= 0n ? netFlow24h : -netFlow24h, 2)} NET`} sub="Adds minus removals" change={{ text: netFlow24h > 0n ? 'Net staking growth' : netFlow24h < 0n ? 'Net staking outflow' : 'No net change', tone: netFlow24h > 0n ? 'positive' : netFlow24h < 0n ? 'negative' : 'idle' }} />
