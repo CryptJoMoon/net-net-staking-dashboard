@@ -18,12 +18,13 @@ async function fetchHolderWallets(token) {
   do {
     const query = next ? `?${new URLSearchParams(Object.entries(next).map(([key, value]) => [key, String(value)]))}` : '';
     let page = null;
-    for (let attempt = 0; attempt < 4 && !page; attempt += 1) {
+    for (let attempt = 0; attempt < 8 && !page; attempt += 1) {
       try {
         const response = await fetch(`${CONFIG.api}/tokens/${token}/holders${query}`, { headers: { accept: 'application/json' } });
         if (response.ok) page = await response.json();
-      } catch { /* retry transient explorer failures */ }
-      if (!page) await pause(500 * (attempt + 1));
+        else console.warn(`Holder page retry: token=${token.slice(0, 8)} status=${response.status} attempt=${attempt + 1}`);
+      } catch (error) { console.warn(`Holder page retry: token=${token.slice(0, 8)} error=${error.message} attempt=${attempt + 1}`); }
+      if (!page) await pause(Math.min(15_000, 1_500 * (attempt + 1)));
     }
     if (!page?.items) throw new Error(`Unable to classify ${token} holders`);
     for (const item of page.items) {
@@ -33,7 +34,7 @@ async function fetchHolderWallets(token) {
       else wallets.add(address);
     }
     next = page.next_page_params || null;
-    if (next) await pause(150);
+    if (next) await pause(350);
   } while (next);
   return { wallets, excluded };
 }
