@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, ArrowDownToLine, ArrowUpFromLine, Coins, ExternalLink, RefreshCw, Search, Users } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowUpFromLine, Coins, ExternalLink, RefreshCw, Search, Trophy, Users } from 'lucide-react';
 import { createPublicClient, http } from 'viem';
 import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchLogs, hydrate, latestBlock, viewModel } from './indexer.js';
 import './styles.css';
@@ -188,12 +188,19 @@ function App() {
   const lotteryPayouts = (data.winNetStakers || []).reduce((sum, row) => sum + BigInt(row.rewards || 0), 0n);
   const lotteryPayouts24h = (data.winNetActivity || []).filter((event) => event.type === 'WinNET Prize' && event.timestamp && Date.now() - new Date(event.timestamp).getTime() <= 24 * 60 * 60 * 1000);
   const lotteryPayoutAmount24h = lotteryPayouts24h.reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
+  const latestLotteryWin = (data.winNetActivity || []).find((event) => event.type === 'WinNET Prize') || null;
+  const latestWinner = latestLotteryWin ? (data.winNetStakers || []).find((row) => row.address.toLowerCase() === latestLotteryWin.actor?.toLowerCase()) : null;
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
       <div className="brand"><div className="crt">NET</div><div><p>NETNET CAPITAL</p><h1>Shareholder Staking Ledger</h1><span>Independent, read-only onchain records</span></div><div className="livebox"><i className={status === 'Live' ? 'on' : ''}/><b>{status}</b><small>{lag == null ? 'Connecting' : `${lag.toLocaleString()} blocks behind head`}</small></div></div>
       {error && <div className="notice">{error}</div>}
     </Window>
+    <section className="lottery-banner">
+      <div className="lottery-callout"><Trophy size={25}/><div><label>Latest WinNET jackpot winner</label>{latestLotteryWin ? <><strong><Address value={latestLotteryWin.actor}/> won {amount(latestLotteryWin.amount, 2)} NET</strong><small>{when(latestLotteryWin.timestamp)} · {fund?.price > 0 ? usd(Number(latestLotteryWin.amount) / 1e9 * fund.price) : '—'} current value</small></> : <><strong>Tonight could be your night.</strong><small>Public-beacon nightly prize draws backed by pooled NET staking.</small></>}</div></div>
+      {latestWinner && <div className="winner-stats"><span><b>{(latestWinner.lotteryWins || 0).toLocaleString()}</b> jackpot wins</span><span><b>{amount(latestWinner.rewards, 2)} NET</b> lifetime won</span><span><b>{fund?.price > 0 ? usd(Number(latestWinner.rewards) / 1e9 * fund.price) : '—'}</b> winnings value</span><span><b>{amount(latestWinner.balance, 2)} NET</b> current WinNET stake</span></div>}
+      <div className="lottery-cta"><a href="https://win.netnet.capital/?ref=cryptjomoon" target="_blank" rel="noreferrer sponsored">Play WinNET <ExternalLink size={13}/></a><small>Affiliate link · 18+ · prizes vary</small></div>
+    </section>
     <div className="stats">
       <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub={stakeDistribution ? `Median ${amount(stakeDistribution.median, 2)} NET · Average ${amount(stakeDistribution.average, 2)} NET` : 'Current holder balances'} change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" change={{ text: fund?.price > 0 ? `${usd(Number(data.adds24h) / 1e9 * fund.price)} at current TWAP` : 'USD value loading', tone: 'idle' }} />
