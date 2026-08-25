@@ -192,7 +192,9 @@ function App() {
   const activeStakers = data.stakers.filter((r) => BigInt(r.balance) > 0n && !excludedAddresses.has(r.address.toLowerCase())).length;
   const walletHolderCount = latestMetrics?.walletHolderCount || null;
   const walletStakerCount = latestMetrics?.walletStakerCount || activeStakers;
-  const addressStakingPct = walletHolderCount > 0 ? walletStakerCount / walletHolderCount * 100 : null;
+  const trueHolderCount = latestMetrics?.trueHolderCount || walletHolderCount;
+  const trueStakerCount = latestMetrics?.trueStakerCount || walletStakerCount;
+  const addressStakingPct = trueHolderCount > 0 ? trueStakerCount / trueHolderCount * 100 : null;
   const winNetParticipants = (data.winNetStakers || []).filter((row) => BigInt(row.balance) > 0n).length;
   const lotteryWinners = (data.winNetStakers || []).filter((row) => (row.lotteryWins || 0) > 0).length;
   const lotteryPayoutCount = (data.winNetStakers || []).reduce((sum, row) => sum + (row.lotteryWins || 0), 0);
@@ -222,7 +224,7 @@ function App() {
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Market price" value={fund?.price > 0 ? `${fund.price.toFixed(4)} USDG` : 'Loading…'} sub="One-hour NET/USDG TWAP" change={change24h(fund?.price > 0 ? fund.price : null, baseline24h?.price, (n) => Math.abs(n).toFixed(4))} />
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
-      <Readout icon={Users} label="Staking addresses" value={walletStakerCount.toLocaleString()} sub={walletHolderCount ? `${walletHolderCount.toLocaleString()} unique NET/sNET wallets · ${addressStakingPct.toFixed(1)}% staking · contracts/LP/infra excluded` : `${data.stakers.length.toLocaleString()} lifetime participants · wallet filter indexing`} change={change24h(walletStakerCount, baseline24h?.activeStakers)} />
+      <Readout icon={Users} label="True unique holders" value={trueHolderCount?.toLocaleString() || 'Indexing…'} sub={latestMetrics?.trueHolderCount ? `${latestMetrics.directHolderCount.toLocaleString()} direct · ${latestMetrics.winNetHolderCount.toLocaleString()} WinNET · ${latestMetrics.wsNetHolderCount.toLocaleString()} wsNET · ${latestMetrics.holderOverlapsRemoved.toLocaleString()} overlaps removed · ${addressStakingPct.toFixed(1)}% staking` : 'Combining direct and contract-underlying holders'} change={change24h(trueHolderCount, baseline24h?.trueHolderCount)} />
       <Readout icon={Users} label="Direct wallet stake" value={stakeDistribution ? `${amount(stakeDistribution.total, 2)} sNET` : 'Loading…'} sub={stakeDistribution ? `${stakeDistribution.count.toLocaleString()} active wallet positions · contracts excluded` : 'Wallet-only staking balance'} />
       <Readout icon={Coins} label="WinNET pooled stake" value={`${amount(venueStake.winNet, 2)} sNET`} sub={`${winNetParticipants.toLocaleString()} active principal wallets${fund?.playingTonight != null ? ` · ${fund.playingTonight.toLocaleString()} playing tonight` : ''}`} />
       <Readout icon={Coins} label="wsNET collateral wrapper" value={`${amount(venueStake.wsNet, 2)} sNET`} sub="Wrapped staked NET for lending/perpetual collateral · not WinNET lottery stake" />
