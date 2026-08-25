@@ -65,7 +65,7 @@ export function hydrate(raw) {
 
 export function serialize(state) {
   return {
-    version: 4, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
+    version: state.version || 6, cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt,
     totalSupply: state.totalSupply.toString(), gpf: state.gpf.toString(),
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
