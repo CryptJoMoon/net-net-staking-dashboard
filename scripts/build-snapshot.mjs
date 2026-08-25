@@ -5,12 +5,22 @@ import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fe
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchRpcWinNetDraws(fromBlock, toBlock) {
+  const logs = await client.getLogs({ address: CONFIG.winNetDrawController, event: drawSettledEvent, fromBlock: BigInt(fromBlock), toBlock: BigInt(toBlock) });
+  const timestamps = new Map();
+  for (const blockNumber of [...new Set(logs.map((log) => log.blockNumber))]) {
+    const block = await client.getBlock({ blockNumber });
+    timestamps.set(blockNumber.toString(), new Date(Number(block.timestamp) * 1000).toISOString());
+  }
+  return logs.map((log) => ({ address: log.address, block_number: Number(log.blockNumber), block_timestamp: timestamps.get(log.blockNumber.toString()), data: log.data, index: Number(log.logIndex), topics: log.topics, transaction_hash: log.transactionHash }));
+}
 
 function isUserWalletAddress(address) {
   if (!address?.is_contract) return true;
@@ -111,9 +121,11 @@ const winNetDrawLogs = needsWinNetBackfill
   ? fetchRawHistoricalLogs(CONFIG.winNetDrawController, CONFIG.winNetDeploymentBlock, cutoff, progress, '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174')
   : fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff, onProgress: progress });
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
-const [staking, sNet, winNet, winNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs]);
+const rpcWinNetDrawLogs = fetchRpcWinNetDraws(winNetStopAt + 1, cutoff).catch(() => []);
+const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs, rpcWinNetDrawLogs]);
 applyLogs(state, [...staking, ...sNet]);
-applyWinNetLogs(state, [...winNet, ...winNetDraws]);
+applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
+state.version = 5;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
@@ -122,4 +134,4 @@ try {
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
-console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length + winNetDraws.length} WinNET logs at block ${cutoff}`);
+console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length + winNetDraws.length + rpcWinNetDraws.length} WinNET logs at block ${cutoff}`);
