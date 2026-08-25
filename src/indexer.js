@@ -47,7 +47,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 5, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
+  return { version: 6, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -132,11 +132,20 @@ export function applyWinNetLogs(state, logs) {
     const key = lower(actor);
     if (!state.winNetWallets.has(key)) state.winNetWallets.set(key, { address: actor, principal: '0', entered: '0', exited: '0', prizes: '0', penalties: '0', wins: 0, entries: 0, exits: 0, lastActive: null });
     const wallet = state.winNetWallets.get(key); let type = null, amount = 0n;
+    const payoutAlreadyCounted = state.winNetActivity.some((event) => event.tx === log.transaction_hash && (event.type === 'WinNET Prize' || event.type === 'WinNET Draw'));
     if (topic === WINNET_TOPICS.entered) { amount = dataUint(log.data, 1); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
     else if (topic === WINNET_TOPICS.enteredWithNet) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
     else if (topic === WINNET_TOPICS.exited || topic === WINNET_TOPICS.exitedToUsdg) { amount = dataUint(log.data, 0); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'exited', amount); wallet.exits += 1; type = 'WinNET Exit'; }
-    else if (topic === WINNET_TOPICS.prizePaid) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; type = 'WinNET Prize'; }
-    else if (topic === WINNET_TOPICS.drawSettled) { amount = dataUint(log.data, 0); type = 'WinNET Draw'; }
+    else if (topic === WINNET_TOPICS.prizePaid) {
+      amount = dataUint(log.data, 0);
+      if (!payoutAlreadyCounted) { addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; }
+      type = 'WinNET Prize';
+    }
+    else if (topic === WINNET_TOPICS.drawSettled) {
+      amount = dataUint(log.data, 0);
+      if (!payoutAlreadyCounted) { addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; }
+      type = 'WinNET Draw';
+    }
     else if (topic === WINNET_TOPICS.earlyUnlocked) { amount = dataUint(log.data, 1); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'penalties', amount); type = 'WinNET Penalty'; }
     else if (topic === WINNET_TOPICS.fullExit) { wallet.principal = '0'; type = 'WinNET Full Exit'; }
     if (type) {
