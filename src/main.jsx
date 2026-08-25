@@ -78,7 +78,8 @@ function App() {
       if (!quiet) setStatus('Checking the chain…'); setError('');
       const chainHead = await latestBlock(); setHead(chainHead);
       const confirmed = chainHead - 5, stopAt = base.cutoffBlock;
-      const [staking, sNet, winNet] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: base.winNetCutoffBlock, cutoff: confirmed })]);
+      const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, base.winNetCutoffBlock - 500);
+      const [staking, sNet, winNet] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed })]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
       applyWinNetLogs(base, winNet); base.winNetCutoffBlock = confirmed;
       setState({ ...base }); setStatus('Live');
