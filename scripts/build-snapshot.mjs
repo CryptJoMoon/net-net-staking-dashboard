@@ -105,7 +105,7 @@ if (needsWinNetBackfill) {
 }
 const winNetLogs = needsWinNetBackfill
   ? fetchRawHistoricalLogs(CONFIG.winNet, CONFIG.winNetDeploymentBlock, cutoff, progress)
-  : fetchLogs(CONFIG.winNet, { stopAt: state.winNetCutoffBlock, cutoff, onProgress: progress });
+  : fetchLogs(CONFIG.winNet, { stopAt: Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500), cutoff, onProgress: progress });
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
 const [staking, sNet, winNet] = await Promise.all([...mainLogs, winNetLogs]);
 applyLogs(state, [...staking, ...sNet]);
