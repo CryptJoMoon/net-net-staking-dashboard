@@ -12,6 +12,7 @@ const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'vie
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
 const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
@@ -24,6 +25,15 @@ const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
 let snapshotSleeveFallback = null;
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function fetchRpcWinNetDraws(fromBlock, toBlock) {
+  const logs = await publicClient.getLogs({ address: CONFIG.winNetDrawController, event: drawSettledEvent, fromBlock: BigInt(fromBlock), toBlock: BigInt(toBlock) });
+  const timestamps = new Map();
+  for (const blockNumber of [...new Set(logs.map((log) => log.blockNumber))]) {
+    const block = await publicClient.getBlock({ blockNumber });
+    timestamps.set(blockNumber.toString(), new Date(Number(block.timestamp) * 1000).toISOString());
+  }
+  return logs.map((log) => ({ address: log.address, block_number: Number(log.blockNumber), block_timestamp: timestamps.get(log.blockNumber.toString()), data: log.data, index: Number(log.logIndex), topics: log.topics, transaction_hash: log.transactionHash }));
+}
 async function fetchSleeveBalances() {
   for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
@@ -79,9 +89,9 @@ function App() {
       const chainHead = await latestBlock(); setHead(chainHead);
       const confirmed = chainHead - 5, stopAt = base.cutoffBlock;
       const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, base.winNetCutoffBlock - 500);
-      const [staking, sNet, winNet, winNetDraws] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff: confirmed })]);
+      const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff: confirmed }), fetchRpcWinNetDraws(winNetStopAt + 1, confirmed).catch(() => [])]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
-      applyWinNetLogs(base, [...winNet, ...winNetDraws]); base.winNetCutoffBlock = confirmed;
+      applyWinNetLogs(base, [...winNet, ...winNetDraws, ...rpcWinNetDraws]); base.winNetCutoffBlock = confirmed;
       setState({ ...base }); setStatus('Live');
     } catch (e) { setError(e.message); setStatus('Snapshot mode'); setState({ ...base }); }
   };
