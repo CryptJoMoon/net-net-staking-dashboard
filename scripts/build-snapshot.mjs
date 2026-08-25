@@ -9,8 +9,9 @@ const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
+const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
-const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
+const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchRpcWinNetDraws(fromBlock, toBlock) {
   const logs = await client.getLogs({ address: CONFIG.winNetDrawController, event: drawSettledEvent, fromBlock: BigInt(fromBlock), toBlock: BigInt(toBlock) });
@@ -77,16 +78,36 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
   let holderMetrics = null;
   if (classifyHolders) {
     try {
-      const netHolders = await fetchHolderWallets(CONFIG.net);
-      const sNetHolders = await fetchHolderWallets(CONFIG.sNet);
-      const allWallets = new Set([...netHolders.wallets, ...sNetHolders.wallets]);
-      holderMetrics = { walletHolderCount: allWallets.size, walletStakerCount: sNetHolders.wallets.size, excludedHolderAddresses: [...new Set([...netHolders.excluded, ...sNetHolders.excluded])] };
+      const [netHolders, sNetHolders, wsNetHolders] = await Promise.all([
+        fetchHolderWallets(CONFIG.net),
+        fetchHolderWallets(CONFIG.sNet),
+        fetchHolderWallets(WSNET_WRAPPER),
+      ]);
+      const vm = viewModel(state);
+      const excludedAddresses = new Set([...netHolders.excluded, ...sNetHolders.excluded, ...wsNetHolders.excluded, ...knownInfra]);
+      const directStakers = new Set(vm.stakers.filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => row.address.toLowerCase()));
+      const directHolders = new Set([...netHolders.wallets, ...sNetHolders.wallets, ...directStakers]);
+      const winNetHolders = new Set(vm.winNetStakers.filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => row.address.toLowerCase()));
+      const wrappedHolders = new Set(wsNetHolders.wallets);
+      const trueHolders = new Set([...directHolders, ...winNetHolders, ...wrappedHolders]);
+      const trueStakers = new Set([...sNetHolders.wallets, ...directStakers, ...winNetHolders, ...wrappedHolders]);
+      holderMetrics = {
+        walletHolderCount: directHolders.size,
+        walletStakerCount: directStakers.size,
+        trueHolderCount: trueHolders.size,
+        trueStakerCount: trueStakers.size,
+        directHolderCount: directHolders.size,
+        winNetHolderCount: winNetHolders.size,
+        wsNetHolderCount: wrappedHolders.size,
+        holderOverlapsRemoved: directHolders.size + winNetHolders.size + wrappedHolders.size - trueHolders.size,
+        excludedHolderAddresses: [...excludedAddresses],
+      };
     } catch (error) { console.warn(`Holder classification fallback: ${error.message}`); }
   } else console.log('Deferring holder classification until after the WinNET checkpoint');
   const supplyNet = Number(supply) / 1e9, stakedNet = Number(staked) / 1e9, price = Number(priceWad) / 1e18;
   const circulatingNet = Math.max(0, supplyNet - excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0));
   const vm = viewModel(state), onchainRfv = Number(rfv) / 1e18;
-  return { timestamp: new Date().toISOString(), block: state.cutoffBlock, totalStaked: Number(vm.totalStaked) / 1e9, activeStakers: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? vm.stakers.filter((row) => BigInt(row.balance) > 0n).length, totalRewards: Number(vm.totalRewards) / 1e9, onchainRfv, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, walletHolderCount: holderMetrics?.walletHolderCount ?? previousPoint?.walletHolderCount ?? null, walletStakerCount: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? null, excludedHolderAddresses: holderMetrics?.excludedHolderAddresses ?? previousPoint?.excludedHolderAddresses ?? [...knownInfra], circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null };
+  return { timestamp: new Date().toISOString(), block: state.cutoffBlock, totalStaked: Number(vm.totalStaked) / 1e9, activeStakers: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? vm.stakers.filter((row) => BigInt(row.balance) > 0n).length, totalRewards: Number(vm.totalRewards) / 1e9, onchainRfv, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, walletHolderCount: holderMetrics?.walletHolderCount ?? previousPoint?.walletHolderCount ?? null, walletStakerCount: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? null, trueHolderCount: holderMetrics?.trueHolderCount ?? previousPoint?.trueHolderCount ?? null, trueStakerCount: holderMetrics?.trueStakerCount ?? previousPoint?.trueStakerCount ?? null, directHolderCount: holderMetrics?.directHolderCount ?? previousPoint?.directHolderCount ?? null, winNetHolderCount: holderMetrics?.winNetHolderCount ?? previousPoint?.winNetHolderCount ?? null, wsNetHolderCount: holderMetrics?.wsNetHolderCount ?? previousPoint?.wsNetHolderCount ?? null, holderOverlapsRemoved: holderMetrics?.holderOverlapsRemoved ?? previousPoint?.holderOverlapsRemoved ?? null, excludedHolderAddresses: holderMetrics?.excludedHolderAddresses ?? previousPoint?.excludedHolderAddresses ?? [...knownInfra], circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null };
 }
 
 await mkdir('public', { recursive: true });
