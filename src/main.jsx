@@ -79,9 +79,9 @@ function App() {
       const chainHead = await latestBlock(); setHead(chainHead);
       const confirmed = chainHead - 5, stopAt = base.cutoffBlock;
       const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, base.winNetCutoffBlock - 500);
-      const [staking, sNet, winNet] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed })]);
+      const [staking, sNet, winNet, winNetDraws] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff: confirmed })]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
-      applyWinNetLogs(base, winNet); base.winNetCutoffBlock = confirmed;
+      applyWinNetLogs(base, [...winNet, ...winNetDraws]); base.winNetCutoffBlock = confirmed;
       setState({ ...base }); setStatus('Live');
     } catch (e) { setError(e.message); setStatus('Snapshot mode'); setState({ ...base }); }
   };
@@ -189,7 +189,7 @@ function App() {
   const lotteryPayouts = (data.winNetStakers || []).reduce((sum, row) => sum + BigInt(row.rewards || 0), 0n);
   const lotteryPayouts24h = (data.winNetActivity || []).filter((event) => event.type === 'WinNET Prize' && event.timestamp && Date.now() - new Date(event.timestamp).getTime() <= 24 * 60 * 60 * 1000);
   const lotteryPayoutAmount24h = lotteryPayouts24h.reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
-  const latestLotteryWin = (data.winNetActivity || []).find((event) => event.type === 'WinNET Prize') || null;
+  const latestLotteryWin = (data.winNetActivity || []).find((event) => event.type === 'WinNET Draw') || (data.winNetActivity || []).find((event) => event.type === 'WinNET Prize') || null;
   const latestWinner = latestLotteryWin ? (data.winNetStakers || []).find((row) => row.address.toLowerCase() === latestLotteryWin.actor?.toLowerCase()) : null;
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
@@ -198,7 +198,7 @@ function App() {
       {error && <div className="notice">{error}</div>}
     </Window>
     <section className="lottery-banner">
-      <div className="lottery-callout"><Trophy size={25}/><div><label>Latest WinNET jackpot winner</label>{latestLotteryWin ? <><strong><Address value={latestLotteryWin.actor}/> won {amount(latestLotteryWin.amount, 2)} NET</strong><small>{when(latestLotteryWin.timestamp)} · {fund?.price > 0 ? usd(Number(latestLotteryWin.amount) / 1e9 * fund.price) : '—'} current value</small></> : <><strong>Tonight could be your night.</strong><small>Public-beacon nightly prize draws backed by pooled NET staking.</small></>}</div></div>
+      <div className="lottery-callout"><Trophy size={25}/><div><label>Latest WinNET jackpot winner</label>{latestLotteryWin ? <><strong>{latestLotteryWin.drawId != null ? <>No. {latestLotteryWin.drawId} · </> : null}<Address value={latestLotteryWin.actor}/> won {amount(latestLotteryWin.amount, 2)} NET</strong><small>{when(latestLotteryWin.timestamp)} · {fund?.price > 0 ? usd(Number(latestLotteryWin.amount) / 1e9 * fund.price) : '—'} current value</small></> : <><strong>Tonight could be your night.</strong><small>Public-beacon nightly prize draws backed by pooled NET staking.</small></>}</div></div>
       {latestWinner && <div className="winner-stats"><span><b>{(latestWinner.lotteryWins || 0).toLocaleString()}</b> jackpot wins</span><span><b>{amount(latestWinner.rewards, 2)} NET</b> lifetime won</span><span><b>{fund?.price > 0 ? usd(Number(latestWinner.rewards) / 1e9 * fund.price) : '—'}</b> winnings value</span><span><b>{amount(latestWinner.balance, 2)} NET</b>{fund?.price > 0 ? `${usd(Number(latestWinner.balance) / 1e9 * fund.price)} current stake value` : 'Current WinNET stake'}</span></div>}
       <div className="lottery-cta"><a href="https://win.netnet.capital/?ref=cryptjomoon" target="_blank" rel="noreferrer sponsored">Play WinNET <ExternalLink size={13}/></a><small>Affiliate link · 18+ · prizes vary</small></div>
     </section>
