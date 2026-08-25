@@ -96,20 +96,24 @@ const mainLogs = historical ? [
   fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
   fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
 ];
-const needsWinNetBackfill = !previous || Number(previous.version || 1) < 4 || !previous.winNetCutoffBlock;
+const needsWinNetBackfill = !previous || Number(previous.version || 1) < 5 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
   state.winNetCutoffBlock = CONFIG.winNetDeploymentBlock - 1;
   state.winNetWallets = new Map();
   state.winNetActivity = [];
   state.winNetSeen = new Set();
 }
+const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500);
 const winNetLogs = needsWinNetBackfill
   ? fetchRawHistoricalLogs(CONFIG.winNet, CONFIG.winNetDeploymentBlock, cutoff, progress)
-  : fetchLogs(CONFIG.winNet, { stopAt: Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500), cutoff, onProgress: progress });
+  : fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff, onProgress: progress });
+const winNetDrawLogs = needsWinNetBackfill
+  ? fetchRawHistoricalLogs(CONFIG.winNetDrawController, CONFIG.winNetDeploymentBlock, cutoff, progress, '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174')
+  : fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff, onProgress: progress });
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
-const [staking, sNet, winNet] = await Promise.all([...mainLogs, winNetLogs]);
+const [staking, sNet, winNet, winNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs]);
 applyLogs(state, [...staking, ...sNet]);
-applyWinNetLogs(state, winNet);
+applyWinNetLogs(state, [...winNet, ...winNetDraws]);
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
@@ -118,4 +122,4 @@ try {
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
-console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length} WinNET logs at block ${cutoff}`);
+console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length + winNetDraws.length} WinNET logs at block ${cutoff}`);
