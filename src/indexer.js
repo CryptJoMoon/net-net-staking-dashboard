@@ -14,6 +14,7 @@ export const CONFIG = {
   packDesk: '0x7cf28D61D42352Eb2FD68167e9B08f73CBbF21eB',
   managerSleeve: '0x498752D5fa0600CBd613074C151Abe15B3FeC7CB',
   winNet: '0x7332B329860986e596B2fd71e9c53786c0242ce5',
+  winNetDrawController: '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70',
   deploymentBlock: 11439688,
   winNetDeploymentBlock: 20922503,
   decimals: 9,
@@ -35,6 +36,7 @@ const WINNET_TOPICS = {
   exited: '0x8a5fb43af839bf26e1fb4b456434b3cf69111df1b3e95abca72edeb31588a7ba',
   exitedToUsdg: '0x976a9f453f5c058ec504d1fd497581dc7cda9fe95209f9dc6f55f8ed749051f0',
   prizePaid: '0x3d8e8e4fb25b225f79c876a0e65b0399b4202048d4d72f276c1f0fa046891167',
+  drawSettled: '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174',
   earlyUnlocked: '0xa3fbf5ab09b5d4aef9d96d27ec59daf5803b6b5b80a219070d47c8b907616053',
   fullExit: '0x68443e4550884e7d05d71c512db6fcd2474daf53bf5b98464a53637b9011e560',
 };
@@ -45,7 +47,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 4, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
+  return { version: 5, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -123,7 +125,8 @@ export function applyLogs(state, logs) {
 export function applyWinNetLogs(state, logs) {
   const ordered = logs.filter((log) => !state.winNetSeen.has(idOf(log))).sort(cmp);
   for (const log of ordered) {
-    const id = idOf(log), topic = lower(log.topics?.[0]), actor = eventAddress(log.topics?.[1]);
+    const id = idOf(log), topic = lower(log.topics?.[0]);
+    const actor = eventAddress(log.topics?.[topic === WINNET_TOPICS.drawSettled ? 2 : 1]);
     state.winNetSeen.add(id); state.winNetCutoffBlock = Math.max(state.winNetCutoffBlock, log.block_number);
     if (!actor || !Object.values(WINNET_TOPICS).includes(topic)) continue;
     const key = lower(actor);
@@ -133,11 +136,12 @@ export function applyWinNetLogs(state, logs) {
     else if (topic === WINNET_TOPICS.enteredWithNet) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'entered', amount); wallet.entries += 1; type = 'WinNET Entry'; }
     else if (topic === WINNET_TOPICS.exited || topic === WINNET_TOPICS.exitedToUsdg) { amount = dataUint(log.data, 0); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'exited', amount); wallet.exits += 1; type = 'WinNET Exit'; }
     else if (topic === WINNET_TOPICS.prizePaid) { amount = dataUint(log.data, 0); addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; type = 'WinNET Prize'; }
+    else if (topic === WINNET_TOPICS.drawSettled) { amount = dataUint(log.data, 0); type = 'WinNET Draw'; }
     else if (topic === WINNET_TOPICS.earlyUnlocked) { amount = dataUint(log.data, 1); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'penalties', amount); type = 'WinNET Penalty'; }
     else if (topic === WINNET_TOPICS.fullExit) { wallet.principal = '0'; type = 'WinNET Full Exit'; }
     if (type) {
       wallet.lastActive = log.block_timestamp;
-      state.winNetActivity.unshift({ id, type, actor, amount: amount.toString(), block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
+      state.winNetActivity.unshift({ id, type, actor, amount: amount.toString(), drawId: topic === WINNET_TOPICS.drawSettled ? Number(BigInt(log.topics[1])) : null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
     }
   }
   state.winNetActivity = state.winNetActivity.sort((a, b) => b.block - a.block).slice(0, 1500);
@@ -222,10 +226,10 @@ export async function fetchHistoricalLogs(address, fromBlock, toBlock, onProgres
   return (await range(fromBlock, toBlock)).map((log) => normalizeLegacy(log, address)).filter(Boolean);
 }
 
-export async function fetchRawHistoricalLogs(address, fromBlock, toBlock, onProgress) {
+export async function fetchRawHistoricalLogs(address, fromBlock, toBlock, onProgress, topic0 = null) {
   let requests = 0;
   async function range(from, to) {
-    const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address });
+    const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address, ...(topic0 ? { topic0 } : {}) });
     let json;
     for (let retry = 0; retry < 8; retry++) {
       json = await request(`https://robinhoodchain.blockscout.com/api?${params}`); requests += 1;
