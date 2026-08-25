@@ -106,7 +106,7 @@ const mainLogs = historical ? [
   fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
   fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
 ];
-const needsWinNetBackfill = !previous || Number(previous.version || 1) < 5 || !previous.winNetCutoffBlock;
+const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
   state.winNetCutoffBlock = CONFIG.winNetDeploymentBlock - 1;
   state.winNetWallets = new Map();
@@ -125,7 +125,7 @@ const rpcWinNetDrawLogs = fetchRpcWinNetDraws(winNetStopAt + 1, cutoff).catch(()
 const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs, rpcWinNetDrawLogs]);
 applyLogs(state, [...staking, ...sNet]);
 applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
-state.version = 5;
+state.version = 6;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
