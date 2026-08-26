@@ -10,3 +10,6 @@
 @media(max-width:850px){.flow-summary{grid-template-columns:repeat(2,1fr)}}
 
 .th-note{display:block;margin-top:1px;color:var(--muted);font:8px Tahoma;text-transform:none;letter-spacing:0}
+
+.flow-usd{margin-top:2px;color:var(--muted);font:9px/1.25 'Courier New';font-style:normal}
+.flow-summary .positive .flow-usd{color:var(--accent)}.flow-summary .negative .flow-usd{color:var(--red)}
