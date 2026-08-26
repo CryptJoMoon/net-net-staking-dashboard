@@ -74,8 +74,9 @@ const ago = (date) => { if (!date) return '—'; const s = Math.max(0, (Date.now
 function Window({ title, children, className = '' }) {
   return <section className={`window ${className}`}><div className="titlebar"><span>{title}</span><span className="glyphs"><i>_</i><i>□</i></span></div>{children}</section>;
 }
-function Readout({ label, value, sub, change, icon: Icon }) {
-  return <div className="readout">{Icon && <Icon size={15} />}<div><label>{label}</label><strong>{value}</strong>{sub && <small>{sub}</small>}{change && <em className={`readout-change ${change.tone || ''}`}>{change.text}</em>}</div></div>;
+function Readout({ label, value, sub, change, icon: Icon, onClick }) {
+  const activate = (event) => { if (onClick && (event.type === 'click' || event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); onClick(); } };
+  return <div className={`readout${onClick ? ' clickable' : ''}`} onClick={onClick ? activate : undefined} onKeyDown={onClick ? activate : undefined} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}>{Icon && <Icon size={15} />}<div><label>{label}</label><strong>{value}</strong>{sub && <small>{sub}</small>}{change && <em className={`readout-change ${change.tone || ''}`}>{change.text}</em>}</div></div>;
 }
 function Address({ value }) { return <a className="address" href={`${CONFIG.explorer}/address/${value}`} target="_blank" rel="noreferrer" title={value}>{short(value)} <ExternalLink size={10} /></a>; }
 
@@ -83,6 +84,7 @@ function App() {
   const [state, setState] = useState(null), [head, setHead] = useState(null), [status, setStatus] = useState('Loading historical ledger…'), [error, setError] = useState('');
   const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
+  const [flowFilter, setFlowFilter] = useState('all'), [flowSort, setFlowSort] = useState('outflow');
   const refresh = async (base, quiet = false) => {
     try {
       if (!quiet) setStatus('Checking the chain…'); setError('');
@@ -144,6 +146,59 @@ function App() {
   }, [state]);
   const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
   const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())].filter((address) => !confirmedUserWallets.has(address))), [latestMetrics]);
+  const flowAnalysis = useMemo(() => {
+    const empty = { rows: [], joined: 0, exited: 0, increased: 0, reduced: 0, walletAdds: 0n, walletRemovals: 0n, protocolAdds: 0n, protocolRemovals: 0n };
+    if (!data) return empty;
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const currentByAddress = new Map(data.stakers.map((row) => [row.address.toLowerCase(), row]));
+    const grouped = new Map();
+    let protocolAdds = 0n, protocolRemovals = 0n;
+    for (const event of data.activity) {
+      if (!event.actor || !event.timestamp || new Date(event.timestamp).getTime() < since || (event.type !== 'Staked' && event.type !== 'Unstaked')) continue;
+      const address = event.actor.toLowerCase(), value = BigInt(event.amount || 0);
+      if (excludedAddresses.has(address)) {
+        if (event.type === 'Staked') protocolAdds += value; else protocolRemovals += value;
+        continue;
+      }
+      if (!grouped.has(address)) grouped.set(address, { address: event.actor, adds: 0n, removals: 0n, addActions: 0, removalActions: 0, lastActive: event.timestamp });
+      const row = grouped.get(address);
+      if (event.type === 'Staked') { row.adds += value; row.addActions += 1; } else { row.removals += value; row.removalActions += 1; }
+      if (new Date(event.timestamp) > new Date(row.lastActive)) row.lastActive = event.timestamp;
+    }
+    const rows = [...grouped.values()].map((row) => {
+      const current = currentByAddress.get(row.address.toLowerCase()), balance = BigInt(current?.balance || 0), net = row.adds - row.removals;
+      const openingEstimate = balance - net > 0n ? balance - net : 0n;
+      let status = 'Rebalanced';
+      if (balance === 0n && row.removals > 0n) status = 'Exited';
+      else if (row.adds > 0n && current && current.stakes === row.addActions) status = 'Joined';
+      else if (net > 0n) status = 'Increased';
+      else if (net < 0n) status = 'Reduced';
+      return { ...row, balance, net, openingEstimate, status };
+    });
+    return {
+      rows,
+      joined: rows.filter((row) => row.status === 'Joined').length,
+      exited: rows.filter((row) => row.status === 'Exited').length,
+      increased: rows.filter((row) => row.status === 'Increased').length,
+      reduced: rows.filter((row) => row.status === 'Reduced').length,
+      walletAdds: rows.reduce((sum, row) => sum + row.adds, 0n),
+      walletRemovals: rows.reduce((sum, row) => sum + row.removals, 0n),
+      protocolAdds,
+      protocolRemovals,
+    };
+  }, [data, excludedAddresses]);
+  const flowRows = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    const filtered = flowAnalysis.rows.filter((row) => (flowFilter === 'all' || row.status.toLowerCase() === flowFilter) && (!q || row.address.toLowerCase().includes(q)));
+    return filtered.sort((a, b) => {
+      if (flowSort === 'inflow') return a.net === b.net ? 0 : a.net > b.net ? -1 : 1;
+      if (flowSort === 'balance') return a.balance === b.balance ? 0 : a.balance > b.balance ? -1 : 1;
+      if (flowSort === 'adds') return a.adds === b.adds ? 0 : a.adds > b.adds ? -1 : 1;
+      if (flowSort === 'removals') return a.removals === b.removals ? 0 : a.removals > b.removals ? -1 : 1;
+      if (flowSort === 'address') return a.address.localeCompare(b.address);
+      return a.net === b.net ? 0 : a.net < b.net ? -1 : 1;
+    });
+  }, [flowAnalysis, flowFilter, flowSort, query]);
   const stakeDistribution = useMemo(() => {
     const balances = (data?.stakers || []).filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => BigInt(row.balance)).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     if (!balances.length) return null;
@@ -185,7 +240,9 @@ function App() {
     });
   }, [data, venue, query, sort, excludedAddresses]);
   const pageSize = 25, pages = Math.max(1, Math.ceil(rows.length / pageSize)), visible = rows.slice((page - 1) * pageSize, page * pageSize);
-  useEffect(() => setPage(1), [venue, query, sort]);
+  const flowPages = Math.max(1, Math.ceil(flowRows.length / pageSize)), flowVisible = flowRows.slice((page - 1) * pageSize, page * pageSize);
+  useEffect(() => setPage(1), [venue, query, sort, flowFilter, flowSort, tab]);
+  const openFlow = () => { setTab('flow'); setPage(1); setTimeout(() => document.querySelector('.flow-window')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); };
   if (!data) return <main className="desktop"><div className="boot">NET STAKING LEDGER<br/><span>Reconstructing shareholder records…</span></div></main>;
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
   const netFlow24h = BigInt(data.adds24h) - BigInt(data.removals24h);
@@ -206,7 +263,7 @@ function App() {
   const latestWinner = latestLotteryWin ? (data.winNetStakers || []).find((row) => row.address.toLowerCase() === latestLotteryWin.actor?.toLowerCase()) : null;
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
-      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
+      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
       <div className="brand"><div className="crt">NET</div><div><p>NETNET CAPITAL</p><h1>Shareholder Staking Ledger</h1><span>Independent, read-only onchain records</span></div><div className="livebox"><i className={status === 'Live' ? 'on' : ''}/><b>{status}</b><small>{lag == null ? 'Connecting' : `${lag.toLocaleString()} blocks behind head`}</small></div></div>
       {error && <div className="notice">{error}</div>}
     </Window>
@@ -219,7 +276,7 @@ function App() {
       <Readout icon={Coins} label="Total staked" value={`${amount(data.totalStaked, 2)} sNET`} sub={stakeDistribution ? `Median ${amount(stakeDistribution.median, 2)} NET · Average ${amount(stakeDistribution.average, 2)} NET` : 'Current holder balances'} change={change24h(Number(data.totalStaked) / 1e9, baseline24h?.totalStaked)} />
       <Readout icon={ArrowDownToLine} label="24-hour adds" value={`+${amount(data.adds24h, 2)} NET`} sub="Rolling staking deposits" change={{ text: fund?.price > 0 ? `${usd(Number(data.adds24h) / 1e9 * fund.price)} at current TWAP` : 'USD value loading', tone: 'idle' }} />
       <Readout icon={ArrowUpFromLine} label="24-hour removals" value={`−${amount(data.removals24h, 2)} NET`} sub="Rolling staking withdrawals" change={{ text: fund?.price > 0 ? `${usd(Number(data.removals24h) / 1e9 * fund.price)} at current TWAP` : 'USD value loading', tone: 'idle' }} />
-      <Readout icon={netFlow24h >= 0n ? ArrowUpFromLine : ArrowDownToLine} label="24-hour net flow" value={`${netFlow24h >= 0n ? '+' : '−'}${amount(netFlow24h >= 0n ? netFlow24h : -netFlow24h, 2)} NET`} sub="Adds minus removals" change={{ text: `${netFlow24h > 0n ? 'Net staking growth' : netFlow24h < 0n ? 'Net staking outflow' : 'No net change'}${fund?.price > 0 && netFlow24h !== 0n ? ` · ${netFlow24h > 0n ? '+' : '−'}${usd(Number(netFlow24h > 0n ? netFlow24h : -netFlow24h) / 1e9 * fund.price)} at current TWAP` : ''}`, tone: netFlow24h > 0n ? 'positive' : netFlow24h < 0n ? 'negative' : 'idle' }} />
+      <Readout icon={netFlow24h >= 0n ? ArrowUpFromLine : ArrowDownToLine} label="24-hour net flow" value={`${netFlow24h >= 0n ? '+' : '−'}${amount(netFlow24h >= 0n ? netFlow24h : -netFlow24h, 2)} NET`} sub="Adds minus removals" onClick={openFlow} change={{ text: `${netFlow24h > 0n ? 'Net staking growth' : netFlow24h < 0n ? 'Net staking outflow' : 'No net change'}${fund?.price > 0 && netFlow24h !== 0n ? ` · ${netFlow24h > 0n ? '+' : '−'}${usd(Number(netFlow24h > 0n ? netFlow24h : -netFlow24h) / 1e9 * fund.price)} at current TWAP` : ''}`, tone: netFlow24h > 0n ? 'positive' : netFlow24h < 0n ? 'negative' : 'idle' }} />
       <Readout icon={Coins} label="True RFV (memo)" value={fund ? usd(fund.trueRfvUsd) : 'Loading…'} sub={fund ? `${wadAmount(fund.treasury.rfv)} on-chain + ${usd(fund.rwaSleeveUsd)} RWA sleeve${fund.rwaSleeveCached ? ' · last known mark' : ''} · team-custodied` : 'RFV + team-custodied Sleeve'} change={change24h(fund?.trueRfvUsd, baseline24h?.trueRfvUsd, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Circulating market cap" value={fund ? usd(fund.circulatingMarketCap) : 'Loading…'} sub={fund && fund.price > 0 ? `${Math.round(fund.circulatingNet).toLocaleString()} NET × ${fund.price.toFixed(3)} USDG` : 'Floating supply × TWAP'} change={change24h(fund?.circulatingMarketCap, baseline24h?.circulatingMarketCap, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
@@ -238,6 +295,19 @@ function App() {
       <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><div className="filters"><select value={venue} onChange={(e) => setVenue(e.target.value)}><option value="all">Venue: all</option><option value="direct">Venue: direct staking</option><option value="winnet">Venue: WinNET lottery</option></select><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="balance">Sort: balance</option><option value="usdValue">Sort: USD value</option><option value="lotteryWinnings">Sort: lottery winnings USD</option><option value="lotteryWins">Sort: lottery win count</option><option value="rewards">Sort: rewards</option><option value="added">Sort: additions</option><option value="removed">Sort: removals</option><option value="address">Sort: address</option></select></div></div>
       <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th>Venue</th><th className="num">Adds</th><th className="num">Removals</th><th className="num">Rewards</th><th className="num">Lottery Wins</th><th className="num">Lottery Winnings USD</th><th className="num">Stake Balance</th><th className="num">Current USD Value</th><th className="num">Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={`${r.address}-${r.venue}`}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'Stake holder'}</small></td><td><span className={`venue ${r.venue.toLowerCase().replaceAll(' ', '-')}`}>{r.venue}</span></td><td className="num up">+{amount(r.added)}</td><td className="num down">−{amount(r.removed)}</td><td className="num reward">+{amount(r.rewards)}</td><td className="num reward">{r.lotteryWins > 0 ? r.lotteryWins.toLocaleString() : '—'}</td><td className="num reward">{BigInt(r.lotteryWinnings || 0) > 0n ? (fund?.price > 0 ? usd(Number(r.lotteryWinnings) / 1e9 * fund.price) : '—') : '—'}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{r.stakes} / {r.unstakes}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
       <div className="pager"><span>{rows.length.toLocaleString()} records</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {pages}</b><button disabled={page === pages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
+    </Window> : tab === 'flow' ? <Window title="24-Hour Staking Flow — Wallet Breakdown" className="flow-window">
+      <div className="flow-summary">
+        <div><small>Wallets active</small><strong>{flowAnalysis.rows.length.toLocaleString()}</strong></div>
+        <div className="positive"><small>First-time joiners</small><strong>{flowAnalysis.joined.toLocaleString()}</strong></div>
+        <div className="negative"><small>Full exits</small><strong>{flowAnalysis.exited.toLocaleString()}</strong></div>
+        <div><small>Increased / reduced</small><strong>{flowAnalysis.increased.toLocaleString()} / {flowAnalysis.reduced.toLocaleString()}</strong></div>
+        <div className={flowAnalysis.walletAdds - flowAnalysis.walletRemovals >= 0n ? 'positive' : 'negative'}><small>Wallet-only net flow</small><strong>{flowAnalysis.walletAdds - flowAnalysis.walletRemovals >= 0n ? '+' : '−'}{amount(flowAnalysis.walletAdds - flowAnalysis.walletRemovals >= 0n ? flowAnalysis.walletAdds - flowAnalysis.walletRemovals : flowAnalysis.walletRemovals - flowAnalysis.walletAdds, 2)} NET</strong></div>
+      </div>
+      <div className="flow-note">Rolling 24 hours · known protocol/LP/infra addresses are separated from wallet counts · opening positions are estimates before deposits and withdrawals, excluding rebase growth.</div>
+      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><div className="filters"><select value={flowFilter} onChange={(e) => setFlowFilter(e.target.value)}><option value="all">Status: all</option><option value="joined">Joined</option><option value="exited">Exited</option><option value="increased">Increased</option><option value="reduced">Reduced</option><option value="rebalanced">Rebalanced</option></select><select value={flowSort} onChange={(e) => setFlowSort(e.target.value)}><option value="outflow">Sort: largest outflow</option><option value="inflow">Sort: largest inflow</option><option value="removals">Sort: removals</option><option value="adds">Sort: additions</option><option value="balance">Sort: current position</option><option value="address">Sort: address</option></select></div></div>
+      <div className="tablewrap"><table><thead><tr><th>#</th><th>Wallet</th><th>Status</th><th className="num">24h Adds</th><th className="num">24h Removals</th><th className="num">24h Net</th><th className="num">Est. Opening Stake</th><th className="num">Current Stake</th><th className="num">Current USD Value</th><th className="num">Actions</th></tr></thead><tbody>{flowVisible.map((row, i) => <tr key={row.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={row.address}/><small className="last">Active {ago(row.lastActive)}</small></td><td><span className={`flow-status ${row.status.toLowerCase()}`}>{row.status}</span></td><td className="num up">+{amount(row.adds, 2)}</td><td className="num down">−{amount(row.removals, 2)}</td><td className={`num ${row.net > 0n ? 'up' : row.net < 0n ? 'down' : 'muted'}`}>{row.net > 0n ? '+' : row.net < 0n ? '−' : ''}{amount(row.net >= 0n ? row.net : -row.net, 2)}</td><td className="num">{amount(row.openingEstimate, 2)}</td><td className="num balance">{amount(row.balance, 2)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(row.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{row.addActions} / {row.removalActions}</td></tr>)}</tbody></table>{!flowVisible.length && <div className="empty">No matching wallet flow.</div>}</div>
+      <div className="flow-contracts">Excluded protocol/contract flow: +{amount(flowAnalysis.protocolAdds, 2)} / −{amount(flowAnalysis.protocolRemovals, 2)} NET</div>
+      <div className="pager"><span>{flowRows.length.toLocaleString()} wallets</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {flowPages}</b><button disabled={page === flowPages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
     </Window> : <Window title="Complete Staking Activity">
       <div className="tablewrap"><table><thead><tr><th>Activity</th><th>Wallet / Epoch</th><th className="num">Amount</th><th>Time (UTC)</th><th className="num">Block</th></tr></thead><tbody>{data.activity.map((a) => <tr key={a.id}><td><span className={`event ${a.type.toLowerCase()}`}>{a.type === 'Staked' ? <ArrowDownToLine size={12}/> : a.type === 'Unstaked' ? <ArrowUpFromLine size={12}/> : <RefreshCw size={12}/>} {a.type}</span></td><td>{a.actor ? <Address value={a.actor}/> : `Epoch ${a.epoch}`}</td><td className={`num ${a.type === 'Unstaked' ? 'down' : 'up'}`}>{a.type === 'Unstaked' ? '−' : '+'}{amount(a.amount)} NET</td><td>{when(a.timestamp)}</td><td className="num"><a href={`${CONFIG.explorer}/tx/${a.tx}`} target="_blank" rel="noreferrer">#{a.block.toLocaleString()}</a></td></tr>)}</tbody></table></div>
     </Window>}
