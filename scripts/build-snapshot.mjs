@@ -13,6 +13,19 @@ const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
+
+function sleeveValue(balances) {
+  if (!Array.isArray(balances)) return null;
+  const valuedBalances = balances.filter((item) => {
+    const value = Number(item.value), decimals = Number(item.token?.decimals), exchangeRate = Number(item.token?.exchange_rate);
+    return sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && Number.isFinite(value) && Number.isFinite(decimals) && Number.isFinite(exchangeRate) && exchangeRate > 0;
+  });
+  if (!valuedBalances.length) return null;
+  const total = valuedBalances.reduce((sum, item) => sum + Number(item.value) / 10 ** Number(item.token.decimals) * Number(item.token.exchange_rate), 0);
+  return validSleeveMark(total) ? total : null;
+}
+
 async function fetchRpcWinNetDraws(fromBlock, toBlock) {
   const logs = await client.getLogs({ address: CONFIG.winNetDrawController, event: drawSettledEvent, fromBlock: BigInt(fromBlock), toBlock: BigInt(toBlock) });
   const timestamps = new Map();
@@ -71,8 +84,8 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
     Promise.all(excluded.map((address) => client.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
     fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`).then((r) => r.ok ? r.json() : null).catch(() => null),
   ]);
-  const liveSleeveUsd = Array.isArray(sleeve) ? sleeve.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / 10 ** Number(item.token.decimals) * Number(item.token.exchange_rate), 0) : null;
-  const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.rwaSleeveUsd))?.rwaSleeveUsd;
+  const liveSleeveUsd = sleeveValue(sleeve);
+  const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd))?.rwaSleeveUsd;
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
   let holderMetrics = null;
