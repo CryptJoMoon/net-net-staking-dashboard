@@ -48,12 +48,19 @@ async function fetchSleeveBalances() {
   return null;
 }
 function sleeveValue(balances) {
-  return balances.filter((item) => sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && item.token?.exchange_rate).reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0);
+  const valuedBalances = balances.filter((item) => {
+    const value = Number(item.value), decimals = Number(item.token?.decimals), exchangeRate = Number(item.token?.exchange_rate);
+    return sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && Number.isFinite(value) && Number.isFinite(decimals) && Number.isFinite(exchangeRate) && exchangeRate > 0;
+  });
+  if (!valuedBalances.length) return null;
+  const total = valuedBalances.reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0);
+  return Number.isFinite(total) && total > 0 ? total : null;
 }
+const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
 function cachedSleeveValue() {
   const candidates = [snapshotSleeveFallback];
   try { candidates.push(JSON.parse(localStorage.getItem(SLEEVE_CACHE_KEY))); } catch { /* unavailable or malformed cache */ }
-  return candidates.filter((item) => Number.isFinite(item?.value) && Date.now() - new Date(item.timestamp).getTime() <= SLEEVE_CACHE_MAX_AGE).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.value ?? DISCLOSED_SLEEVE_USD;
+  return candidates.filter((item) => validSleeveMark(item?.value) && Date.now() - new Date(item.timestamp).getTime() <= SLEEVE_CACHE_MAX_AGE).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.value ?? DISCLOSED_SLEEVE_USD;
 }
 function rememberSleeveValue(value) {
   try { localStorage.setItem(SLEEVE_CACHE_KEY, JSON.stringify({ value, timestamp: new Date().toISOString() })); } catch { /* storage can be disabled */ }
@@ -103,7 +110,7 @@ function App() {
       let snapshot;
       try { const r = await fetch(`/snapshot.json?t=${Date.now()}`); if (!r.ok) throw new Error(); snapshot = await r.json(); }
       catch { snapshot = emptyState(); }
-      const lastSleevePoint = [...(snapshot.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.rwaSleeveUsd));
+      const lastSleevePoint = [...(snapshot.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd));
       snapshotSleeveFallback = lastSleevePoint ? { value: lastSleevePoint.rwaSleeveUsd, timestamp: lastSleevePoint.timestamp } : null;
       if (!alive) return; const base = hydrate(snapshot); setState({ ...base }); await refresh(base);
       timer = setInterval(() => refresh(base, true), 15000);
@@ -142,7 +149,7 @@ function App() {
   const data = useMemo(() => state ? viewModel(state) : null, [state]);
   const baseline24h = useMemo(() => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
+    return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff && validSleeveMark(point.rwaSleeveUsd) && Number.isFinite(point.trueRfvUsd)).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
   }, [state]);
   const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
   const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())].filter((address) => !confirmedUserWallets.has(address))), [latestMetrics]);
