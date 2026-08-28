@@ -55,7 +55,10 @@ export function hydrate(raw) {
   return {
     ...state,
     totalSupply: BigInt(state.totalSupply), gpf: BigInt(state.gpf),
-    gons: new Map(Object.entries(state.gons || {}).map(([k, v]) => [k, BigInt(v)])),
+    gons: new Map(Object.entries(state.gons || {}).map(([k, v]) => {
+      const balance = BigInt(v);
+      return [k, balance > 0n ? balance : 0n];
+    })),
     earned: new Map(Object.entries(state.earned || {}).map(([k, v]) => [k, BigInt(v)])),
     wallets: new Map(Object.entries(state.wallets || {})), seen: new Set(state.seen || []),
     winNetCutoffBlock: state.winNetCutoffBlock || CONFIG.winNetDeploymentBlock - 1,
@@ -95,7 +98,10 @@ export function applyLogs(state, logs) {
       if (event === 'Transfer') {
         const from = lower(valueOf(log, 'from')), toRaw = valueOf(log, 'to'), to = lower(toRaw);
         const amount = BigInt(valueOf(log, 'value') || 0), moved = amount * state.gpf;
-        if (from !== '0x0000000000000000000000000000000000000000') state.gons.set(from, (state.gons.get(from) || 0n) - moved);
+        if (from !== '0x0000000000000000000000000000000000000000') {
+          const current = state.gons.get(from) || 0n;
+          state.gons.set(from, current > moved ? current - moved : 0n);
+        }
         if (to !== '0x0000000000000000000000000000000000000000') state.gons.set(to, (state.gons.get(to) || 0n) + moved);
       } else if (event === 'LogRebase') {
         const before = state.gpf, increase = BigInt(valueOf(log, 'rebaseAmount') || 0);
@@ -161,7 +167,8 @@ export function viewModel(state) {
   const rows = new Set([...state.wallets.keys(), ...state.gons.keys()]);
   const stakers = [...rows].filter((a) => a !== lower(CONFIG.staking)).map((address) => {
     const w = state.wallets.get(address) || { address, added: '0', removed: '0', stakes: 0, unstakes: 0, lastActive: null };
-    return { ...w, address: w.address || address, balance: ((state.gons.get(address) || 0n) / state.gpf).toString(), rewards: (state.earned.get(address) || 0n).toString() };
+    const gons = state.gons.get(address) || 0n;
+    return { ...w, address: w.address || address, balance: (gons > 0n ? gons / state.gpf : 0n).toString(), rewards: (state.earned.get(address) || 0n).toString() };
   }).filter((w) => BigInt(w.added) || BigInt(w.removed) || BigInt(w.balance)).sort((a, b) => BigInt(a.balance) === BigInt(b.balance) ? 0 : BigInt(a.balance) > BigInt(b.balance) ? -1 : 1);
   const totalStaked = stakers.reduce((n, w) => n + BigInt(w.balance), 0n);
   const totalRewards = stakers.reduce((n, w) => n + BigInt(w.rewards), 0n);
