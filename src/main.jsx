@@ -66,8 +66,9 @@ function rememberSleeveValue(value) {
   try { localStorage.setItem(SLEEVE_CACHE_KEY, JSON.stringify({ value, timestamp: new Date().toISOString() })); } catch { /* storage can be disabled */ }
 }
 function amount(raw, max = 4) {
-  const value = BigInt(raw || 0), whole = value / UNIT, fraction = (value % UNIT).toString().padStart(9, '0').slice(0, max).replace(/0+$/, '');
-  return `${Number(whole).toLocaleString()}${fraction ? `.${fraction}` : ''}`;
+  const signed = BigInt(raw || 0), negative = signed < 0n, value = negative ? -signed : signed;
+  const whole = value / UNIT, fraction = (value % UNIT).toString().padStart(9, '0').slice(0, max).replace(/0+$/, '');
+  return `${negative ? '−' : ''}${Number(whole).toLocaleString()}${fraction ? `.${fraction}` : ''}`;
 }
 function wadAmount(raw, max = 2) {
   if (raw == null) return '—'; const value = BigInt(raw), whole = value / WAD, fraction = (value % WAD).toString().padStart(18, '0').slice(0, max).replace(/0+$/, '');
@@ -177,7 +178,7 @@ function App() {
       const openingEstimate = balance - net > 0n ? balance - net : 0n;
       let status = 'Rebalanced';
       if (balance === 0n && row.removals > 0n) status = 'Exited';
-      else if (row.adds > 0n && current && current.stakes === row.addActions) status = 'Joined';
+      else if (balance > 0n && row.adds > 0n && current && current.stakes === row.addActions) status = 'Joined';
       else if (net > 0n) status = 'Increased';
       else if (net < 0n) status = 'Reduced';
       return { ...row, balance, net, openingEstimate, status };
