@@ -14,6 +14,7 @@ const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4,
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
+let rpcTimeBaseBlock = 0, rpcTimeBaseMs = Date.now(), rpcBlockMs = 100;
 
 const MAIN_TOPICS = {
   staked: '0x5dac0c1b1112564a045ba943c9d50270893e8e826c49be8e7073adc713ab7bd7',
@@ -42,37 +43,11 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProg
     onProgress?.({ address, page: Math.floor((from - fromBlock) / chunkSize) + 1, count: raw.length });
   }
 
-  const timestamps = new Map();
-  const blocks = [...new Set(raw.map((log) => log.blockNumber.toString()))];
-  const timestampBatchSize = 75;
-  for (let offset = 0; offset < blocks.length; offset += timestampBatchSize) {
-    const batch = blocks.slice(offset, offset + timestampBatchSize);
-    let payload = null;
-    for (let attempt = 0; attempt < 10 && !payload; attempt += 1) {
-      try {
-        const response = await fetch(CONFIG.rpc, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(batch.map((key, index) => ({ jsonrpc: '2.0', id: index, method: 'eth_getBlockByNumber', params: [`0x${BigInt(key).toString(16)}`, false] }))),
-        });
-        if (response.ok) payload = await response.json();
-      } catch { /* retry below */ }
-      if (!payload) await pause(Math.min(10_000, 700 * (attempt + 1)));
-    }
-    if (!Array.isArray(payload)) throw new Error('Unable to retrieve RPC block timestamp batch');
-    for (const item of payload) {
-      const key = batch[Number(item.id)];
-      if (key != null && item.result?.timestamp) timestamps.set(key, new Date(Number(BigInt(item.result.timestamp)) * 1000).toISOString());
-    }
-    if (batch.some((key) => !timestamps.has(key))) throw new Error('RPC timestamp batch returned incomplete blocks');
-    await pause(250);
-  }
-
   return raw.map((log) => {
     const normalized = {
       address,
       block_number: Number(log.blockNumber),
-      block_timestamp: timestamps.get(log.blockNumber.toString()),
+      block_timestamp: new Date(rpcTimeBaseMs + (Number(log.blockNumber) - rpcTimeBaseBlock) * rpcBlockMs).toISOString(),
       data: log.data,
       index: Number(log.logIndex),
       topics: log.topics,
@@ -213,6 +188,10 @@ const state = hydrate(previous || emptyState());
 const chainHead = Number(await client.getBlockNumber());
 const cutoff = chainHead - 25;
 const stopAt = state.cutoffBlock;
+const previousIndexedMs = Date.parse(state.indexedAt || '');
+rpcTimeBaseBlock = stopAt;
+rpcTimeBaseMs = Number.isFinite(previousIndexedMs) ? previousIndexedMs : Date.now() - Math.max(0, cutoff - stopAt) * 100;
+rpcBlockMs = cutoff > stopAt ? Math.max(50, Math.min(1_000, (Date.now() - rpcTimeBaseMs) / (cutoff - stopAt))) : 100;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const mainLogs = [
