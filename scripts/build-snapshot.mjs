@@ -32,14 +32,15 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProg
   for (let from = fromBlock; from <= toBlock; from += chunkSize) {
     const to = Math.min(toBlock, from + chunkSize - 1);
     let logs = null;
-    for (let attempt = 0; attempt < 5 && !logs; attempt += 1) {
+    for (let attempt = 0; attempt < 10 && !logs; attempt += 1) {
       try { logs = await client.getLogs({ address, fromBlock: BigInt(from), toBlock: BigInt(to) }); }
       catch (error) {
-        if (attempt === 4) throw error;
-        await pause(1_000 * (attempt + 1));
+        if (attempt === 9) throw error;
+        await pause(Math.min(12_000, 1_000 * (attempt + 1)));
       }
     }
     raw.push(...logs);
+    await pause(400);
     onProgress?.({ address, page: Math.floor((from - fromBlock) / chunkSize) + 1, count: raw.length });
   }
 
@@ -185,7 +186,14 @@ await mkdir('public', { recursive: true });
 let previous = null;
 try { previous = JSON.parse(await readFile('public/snapshot.json', 'utf8')); } catch {}
 const state = hydrate(previous || emptyState());
-const chainHead = Number(await client.getBlockNumber());
+let chainHead = null;
+for (let attempt = 0; attempt < 12 && chainHead == null; attempt += 1) {
+  try { chainHead = Number(await client.getBlockNumber()); }
+  catch (error) {
+    if (attempt === 11) throw error;
+    await pause(Math.min(15_000, 1_500 * (attempt + 1)));
+  }
+}
 const cutoff = chainHead - 25;
 const stopAt = state.cutoffBlock;
 const previousIndexedMs = Date.parse(state.indexedAt || '');
@@ -194,10 +202,6 @@ rpcTimeBaseMs = Number.isFinite(previousIndexedMs) ? previousIndexedMs : Date.no
 rpcBlockMs = cutoff > stopAt ? Math.max(50, Math.min(1_000, (Date.now() - rpcTimeBaseMs) / (cutoff - stopAt))) : 100;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
-const mainLogs = [
-  rpcLogs(CONFIG.staking, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress }),
-  rpcLogs(CONFIG.sNet, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress }),
-];
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
   state.winNetCutoffBlock = CONFIG.winNetDeploymentBlock - 1;
@@ -206,11 +210,12 @@ if (needsWinNetBackfill) {
   state.winNetSeen = new Set();
 }
 const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500);
-const winNetLogs = rpcLogs(CONFIG.winNet, winNetStopAt + 1, cutoff, { onProgress: progress });
-const winNetDrawLogs = rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1, cutoff, { onProgress: progress });
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
-const rpcWinNetDrawLogs = fetchRpcWinNetDraws(winNetStopAt + 1, cutoff).catch(() => []);
-const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs, rpcWinNetDrawLogs]);
+const staking = await rpcLogs(CONFIG.staking, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress });
+const sNet = await rpcLogs(CONFIG.sNet, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress });
+const winNet = await rpcLogs(CONFIG.winNet, winNetStopAt + 1, cutoff, { onProgress: progress });
+const winNetDraws = await rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1, cutoff, { onProgress: progress });
+const rpcWinNetDraws = [];
 applyLogs(state, [...staking, ...sNet]);
 applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
 state.version = 6;
