@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createPublicClient, http } from 'viem';
-import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchLogs, fetchRawHistoricalLogs, hydrate, serialize, viewModel } from '../src/indexer.js';
+import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchRawHistoricalLogs, hydrate, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
@@ -132,13 +132,9 @@ const cutoff = chainHead - 25;
 const stopAt = state.cutoffBlock;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
-const historical = !previous || Number(previous.cutoffBlock || 0) < CONFIG.deploymentBlock;
-const mainLogs = historical ? [
+const mainLogs = [
   fetchHistoricalLogs(CONFIG.staking, stopAt + 1, cutoff, progress),
   fetchHistoricalLogs(CONFIG.sNet, stopAt + 1, cutoff, progress),
-] : [
-  fetchLogs(CONFIG.staking, { stopAt, cutoff, onProgress: progress }),
-  fetchLogs(CONFIG.sNet, { stopAt, cutoff, onProgress: progress }),
 ];
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
@@ -148,12 +144,8 @@ if (needsWinNetBackfill) {
   state.winNetSeen = new Set();
 }
 const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500);
-const winNetLogs = needsWinNetBackfill
-  ? fetchRawHistoricalLogs(CONFIG.winNet, CONFIG.winNetDeploymentBlock, cutoff, progress)
-  : fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff, onProgress: progress });
-const winNetDrawLogs = needsWinNetBackfill
-  ? fetchRawHistoricalLogs(CONFIG.winNetDrawController, CONFIG.winNetDeploymentBlock, cutoff, progress, '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174')
-  : fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff, onProgress: progress });
+const winNetLogs = fetchRawHistoricalLogs(CONFIG.winNet, winNetStopAt + 1, cutoff, progress);
+const winNetDrawLogs = fetchRawHistoricalLogs(CONFIG.winNetDrawController, winNetStopAt + 1, cutoff, progress, '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174');
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
 const rpcWinNetDrawLogs = fetchRpcWinNetDraws(winNetStopAt + 1, cutoff).catch(() => []);
 const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs, rpcWinNetDrawLogs]);
