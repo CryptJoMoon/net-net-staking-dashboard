@@ -394,7 +394,7 @@ function App() {
       <div className="moon-goals">
         <button disabled={!cryptoTargets.eth} onClick={() => setMoonPriceTarget(cryptoTargets.eth)}><span>1 🥅 = 1 ETH</span><small>{cryptoTargets.eth ? usd(cryptoTargets.eth) + ' / NET' : 'Live ETH price loading'}</small></button>
         <button disabled={!cryptoTargets.btc} onClick={() => setMoonPriceTarget(cryptoTargets.btc)}><span>1 🥅 = 1 BITCOIN</span><small>{cryptoTargets.btc ? usd(cryptoTargets.btc) + ' / NET' : 'Live BTC price loading'}</small></button>
-        <button onClick={() => setMoonPriceTarget(1_000_000)}><span>1 🥅 = $1,000,000</span><small>{fund?.supplyNet > 0 ? usd(1_000_000 * fund.supplyNet) + ' fully diluted MC' : 'Target price'}</small></button>
+        <button onClick={() => setMoonPriceTarget(100_000)}><span>1 🥅 = $100,000</span><small>{fund?.supplyNet > 0 ? usd(100_000 * fund.supplyNet) + ' fully diluted MC' : 'Target price'}</small></button>
         <button disabled={!cryptoTargets.top10MarketCap} onClick={() => { setMoonPriceEdit(null); setMoonMarketCap(cryptoTargets.top10MarketCap); }}><span>$NET IN CRYPTO TOP 10</span><small>{cryptoTargets.top10MarketCap ? usd(cryptoTargets.top10MarketCap) + (cryptoTargets.top10Name ? ` · current #10: ${cryptoTargets.top10Name}` : '') : 'Top-10 threshold loading'}</small></button>
       </div>
       <div className="moon-rate">
