@@ -44,14 +44,18 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProg
 
   const timestamps = new Map();
   const blocks = [...new Set(raw.map((log) => log.blockNumber.toString()))];
-  let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(12, blocks.length) }, async () => {
-    while (cursor < blocks.length) {
-      const key = blocks[cursor++];
-      const block = await client.getBlock({ blockNumber: BigInt(key) });
-      timestamps.set(key, new Date(Number(block.timestamp) * 1000).toISOString());
+  for (const key of blocks) {
+    let block = null;
+    for (let attempt = 0; attempt < 10 && !block; attempt += 1) {
+      try { block = await client.getBlock({ blockNumber: BigInt(key) }); }
+      catch (error) {
+        if (attempt === 9) throw error;
+        await pause(Math.min(8_000, 600 * (attempt + 1)));
+      }
     }
-  }));
+    timestamps.set(key, new Date(Number(block.timestamp) * 1000).toISOString());
+    await pause(175);
+  }
 
   return raw.map((log) => {
     const normalized = {
