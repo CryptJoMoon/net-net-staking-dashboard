@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createPublicClient, http } from 'viem';
-import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchRawHistoricalLogs, hydrate, serialize, viewModel } from '../src/indexer.js';
+import { CONFIG, applyLogs, applyWinNetLogs, emptyState, hydrate, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
@@ -14,6 +14,74 @@ const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4,
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
+
+const MAIN_TOPICS = {
+  staked: '0x5dac0c1b1112564a045ba943c9d50270893e8e826c49be8e7073adc713ab7bd7',
+  unstaked: '0xd8654fcc8cf5b36d30b3f5e4688fc78118e6d68de60b9994e09902268b57c3e3',
+  rebased: '0x8d01b778e641f65fc8a5cae34cc83e082ab8b2149b3c1bb3925913116fe4633f',
+  transfer: '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+  approval: '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925',
+};
+const rpcWord = (data = '0x', index = 0) => `0x${data.slice(2 + index * 64, 2 + (index + 1) * 64)}`;
+const rpcAddress = (topic = '') => `0x${topic.slice(-40)}`;
+
+async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProgress } = {}) {
+  const raw = [];
+  const chunkSize = 50_000;
+  for (let from = fromBlock; from <= toBlock; from += chunkSize) {
+    const to = Math.min(toBlock, from + chunkSize - 1);
+    let logs = null;
+    for (let attempt = 0; attempt < 5 && !logs; attempt += 1) {
+      try { logs = await client.getLogs({ address, fromBlock: BigInt(from), toBlock: BigInt(to) }); }
+      catch (error) {
+        if (attempt === 4) throw error;
+        await pause(1_000 * (attempt + 1));
+      }
+    }
+    raw.push(...logs);
+    onProgress?.({ address, page: Math.floor((from - fromBlock) / chunkSize) + 1, count: raw.length });
+  }
+
+  const timestamps = new Map();
+  const blocks = [...new Set(raw.map((log) => log.blockNumber.toString()))];
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(12, blocks.length) }, async () => {
+    while (cursor < blocks.length) {
+      const key = blocks[cursor++];
+      const block = await client.getBlock({ blockNumber: BigInt(key) });
+      timestamps.set(key, new Date(Number(block.timestamp) * 1000).toISOString());
+    }
+  }));
+
+  return raw.map((log) => {
+    const normalized = {
+      address,
+      block_number: Number(log.blockNumber),
+      block_timestamp: timestamps.get(log.blockNumber.toString()),
+      data: log.data,
+      index: Number(log.logIndex),
+      topics: log.topics,
+      transaction_hash: log.transactionHash,
+    };
+    if (!decodeMain) return normalized;
+    const topic = log.topics[0]?.toLowerCase();
+    let name, parameters;
+    if (topic === MAIN_TOPICS.staked || topic === MAIN_TOPICS.unstaked) {
+      name = topic === MAIN_TOPICS.staked ? 'Staked' : 'Unstaked';
+      parameters = [{ name: 'from', value: rpcAddress(log.topics[1]) }, { name: 'to', value: rpcAddress(log.topics[2]) }, { name: 'amount', value: BigInt(log.data).toString() }];
+    } else if (topic === MAIN_TOPICS.rebased) {
+      name = 'Rebased';
+      parameters = [{ name: 'epoch', value: BigInt(log.topics[1]).toString() }, { name: 'distributed', value: BigInt(log.data).toString() }];
+    } else if (address.toLowerCase() === CONFIG.sNet.toLowerCase() && topic === MAIN_TOPICS.transfer) {
+      name = 'Transfer';
+      parameters = [{ name: 'from', value: rpcAddress(log.topics[1]) }, { name: 'to', value: rpcAddress(log.topics[2]) }, { name: 'value', value: BigInt(log.data).toString() }];
+    } else if (address.toLowerCase() === CONFIG.sNet.toLowerCase() && topic !== MAIN_TOPICS.approval) {
+      name = 'LogRebase';
+      parameters = [{ name: 'epoch', value: BigInt(log.topics[1]).toString() }, { name: 'rebaseAmount', value: BigInt(rpcWord(log.data, 0)).toString() }, { name: 'index', value: BigInt(rpcWord(log.data, 1)).toString() }];
+    } else return null;
+    return { ...normalized, decoded: { method_call: `${name}()`, parameters } };
+  }).filter(Boolean);
+}
 
 function sleeveValue(balances) {
   if (!Array.isArray(balances)) return null;
@@ -133,8 +201,8 @@ const stopAt = state.cutoffBlock;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const mainLogs = [
-  fetchHistoricalLogs(CONFIG.staking, stopAt + 1, cutoff, progress),
-  fetchHistoricalLogs(CONFIG.sNet, stopAt + 1, cutoff, progress),
+  rpcLogs(CONFIG.staking, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress }),
+  rpcLogs(CONFIG.sNet, stopAt + 1, cutoff, { decodeMain: true, onProgress: progress }),
 ];
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
 if (needsWinNetBackfill) {
@@ -144,8 +212,8 @@ if (needsWinNetBackfill) {
   state.winNetSeen = new Set();
 }
 const winNetStopAt = Math.max(CONFIG.winNetDeploymentBlock - 1, state.winNetCutoffBlock - 500);
-const winNetLogs = fetchRawHistoricalLogs(CONFIG.winNet, winNetStopAt + 1, cutoff, progress);
-const winNetDrawLogs = fetchRawHistoricalLogs(CONFIG.winNetDrawController, winNetStopAt + 1, cutoff, progress, '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174');
+const winNetLogs = rpcLogs(CONFIG.winNet, winNetStopAt + 1, cutoff, { onProgress: progress });
+const winNetDrawLogs = rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1, cutoff, { onProgress: progress });
 console.log(needsWinNetBackfill ? `Backfilling WinNET from block ${CONFIG.winNetDeploymentBlock}` : `Updating WinNET after block ${state.winNetCutoffBlock}`);
 const rpcWinNetDrawLogs = fetchRpcWinNetDraws(winNetStopAt + 1, cutoff).catch(() => []);
 const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([...mainLogs, winNetLogs, winNetDrawLogs, rpcWinNetDrawLogs]);
