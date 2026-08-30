@@ -44,17 +44,28 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProg
 
   const timestamps = new Map();
   const blocks = [...new Set(raw.map((log) => log.blockNumber.toString()))];
-  for (const key of blocks) {
-    let block = null;
-    for (let attempt = 0; attempt < 10 && !block; attempt += 1) {
-      try { block = await client.getBlock({ blockNumber: BigInt(key) }); }
-      catch (error) {
-        if (attempt === 9) throw error;
-        await pause(Math.min(8_000, 600 * (attempt + 1)));
-      }
+  const timestampBatchSize = 75;
+  for (let offset = 0; offset < blocks.length; offset += timestampBatchSize) {
+    const batch = blocks.slice(offset, offset + timestampBatchSize);
+    let payload = null;
+    for (let attempt = 0; attempt < 10 && !payload; attempt += 1) {
+      try {
+        const response = await fetch(CONFIG.rpc, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(batch.map((key, index) => ({ jsonrpc: '2.0', id: index, method: 'eth_getBlockByNumber', params: [`0x${BigInt(key).toString(16)}`, false] }))),
+        });
+        if (response.ok) payload = await response.json();
+      } catch { /* retry below */ }
+      if (!payload) await pause(Math.min(10_000, 700 * (attempt + 1)));
     }
-    timestamps.set(key, new Date(Number(block.timestamp) * 1000).toISOString());
-    await pause(175);
+    if (!Array.isArray(payload)) throw new Error('Unable to retrieve RPC block timestamp batch');
+    for (const item of payload) {
+      const key = batch[Number(item.id)];
+      if (key != null && item.result?.timestamp) timestamps.set(key, new Date(Number(BigInt(item.result.timestamp)) * 1000).toISOString());
+    }
+    if (batch.some((key) => !timestamps.has(key))) throw new Error('RPC timestamp batch returned incomplete blocks');
+    await pause(250);
   }
 
   return raw.map((log) => {
