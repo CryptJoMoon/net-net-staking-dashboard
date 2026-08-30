@@ -96,6 +96,7 @@ function App() {
   const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
   const [flowFilter, setFlowFilter] = useState('all'), [flowSort, setFlowSort] = useState('outflow');
+  const [moonBag, setMoonBag] = useState('100'), [moonScale, setMoonScale] = useState(0);
   const refresh = async (base, quiet = false) => {
     try {
       if (!quiet) setStatus('Checking the chain…'); setError('');
@@ -276,9 +277,25 @@ function App() {
   const lotteryPayoutAmount24h = lotteryPayouts24h.reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
   const latestLotteryWin = (data.winNetActivity || []).find((event) => event.type === 'WinNET Draw') || (data.winNetActivity || []).find((event) => event.type === 'WinNET Prize') || null;
   const latestWinner = latestLotteryWin ? (data.winNetStakers || []).find((row) => row.address.toLowerCase() === latestLotteryWin.actor?.toLowerCase()) : null;
+  const moonBagNet = Math.max(0, Number(String(moonBag).replaceAll(',', '')) || 0);
+  const moonCurrentMc = Math.max(1, fund?.circulatingMarketCap || 1);
+  const moonMaxMc = Math.max(100_000_000_000, moonCurrentMc);
+  const moonTargetMc = Math.exp(Math.log(moonCurrentMc) + (moonScale / 1000) * (Math.log(moonMaxMc) - Math.log(moonCurrentMc)));
+  const moonPrice = fund?.circulatingNet > 0 ? moonTargetMc / fund.circulatingNet : 0;
+  const moonEpochRate = Math.max(0, fund?.epochRate || 0);
+  const moonProjection = (days) => {
+    const balance = moonBagNet * (1 + moonEpochRate) ** (days * 3);
+    return { days, balance, earned: balance - moonBagNet, value: balance * moonPrice };
+  };
+  const moonProjections = [{ label: '1 Day', days: 1 }, { label: '1 Week', days: 7 }, { label: '1 Month', days: 30 }, { label: '1 Year', days: 365 }].map((period) => ({ ...period, ...moonProjection(period.days) }));
+  const setMoonMarketCap = (value) => {
+    const bounded = Math.max(moonCurrentMc, Math.min(moonMaxMc, value));
+    const denominator = Math.log(moonMaxMc) - Math.log(moonCurrentMc);
+    setMoonScale(denominator > 0 ? Math.round((Math.log(bounded) - Math.log(moonCurrentMc)) / denominator * 1000) : 0);
+  };
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
-      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
+      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><button className={tab === 'moon' ? 'active' : ''} onClick={() => setTab('moon')}><u>M</u>oon Math</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
       <div className="brand"><div className="crt">NET</div><div><p>NETNET CAPITAL</p><h1>Shareholder Staking Ledger</h1><span>Independent, read-only onchain records</span></div><div className="livebox"><i className={status === 'Live' ? 'on' : ''}/><b>{status}</b><small>{lag == null ? 'Connecting' : `${lag.toLocaleString()} blocks behind head`}</small></div></div>
       {error && <div className="notice">{error}</div>}
     </Window>
@@ -323,6 +340,30 @@ function App() {
       <div className="tablewrap"><table><thead><tr><th>#</th><th>Wallet</th><th>Status</th><th className="num">24h Adds</th><th className="num">24h Adds Value<small className="th-note">Current TWAP</small></th><th className="num">24h Removals</th><th className="num">24h Removal Value<small className="th-note">Current TWAP</small></th><th className="num">24h Net</th><th className="num">Est. Opening Stake</th><th className="num">Current Stake</th><th className="num">Current Stake Value</th><th className="num">Actions</th></tr></thead><tbody>{flowVisible.map((row, i) => <tr key={row.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={row.address}/><small className="last">Active {ago(row.lastActive)}</small></td><td><span className={`flow-status ${row.status.toLowerCase()}`}>{row.status}</span></td><td className="num up">+{amount(row.adds, 2)}</td><td className="num up">{fund?.price > 0 ? usd(Number(row.adds) / 1e9 * fund.price) : '—'}</td><td className="num down">−{amount(row.removals, 2)}</td><td className="num down">{fund?.price > 0 ? usd(Number(row.removals) / 1e9 * fund.price) : '—'}</td><td className={`num ${row.net > 0n ? 'up' : row.net < 0n ? 'down' : 'muted'}`}>{row.net > 0n ? '+' : row.net < 0n ? '−' : ''}{amount(row.net >= 0n ? row.net : -row.net, 2)}</td><td className="num">{amount(row.openingEstimate, 2)}</td><td className="num balance">{amount(row.balance, 2)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(row.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{row.addActions} / {row.removalActions}</td></tr>)}</tbody></table>{!flowVisible.length && <div className="empty">No matching wallet flow.</div>}</div>
       <div className="flow-contracts">Excluded protocol/contract flow: +{amount(flowAnalysis.protocolAdds, 2)} / −{amount(flowAnalysis.protocolRemovals, 2)} NET</div>
       <div className="pager"><span>{flowRows.length.toLocaleString()} wallets</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {flowPages}</b><button disabled={page === flowPages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
+    </Window> : tab === 'moon' ? <Window title="Moon Math — Staked Bag Projector" className="moon-window">
+      <div className="moon-controls">
+        <label className="moon-bag"><span>Your bag size</span><div><input type="number" min="0" step="any" value={moonBag} onChange={(event) => setMoonBag(event.target.value)} /><b>NET</b></div><small>Assumes the entire bag is directly staked</small></label>
+        <div className="moon-market">
+          <div className="moon-market-head"><span>Target circulating market cap</span><strong>{usd(moonTargetMc)}</strong></div>
+          <input type="range" min="0" max="1000" step="1" value={moonScale} onChange={(event) => setMoonScale(Number(event.target.value))} aria-label="Target circulating market cap" />
+          <div className="moon-range-labels"><span>{usd(moonCurrentMc)} current</span><span>$100B</span></div>
+          <div className="moon-presets"><button onClick={() => setMoonMarketCap(moonCurrentMc)}>Current</button>{[100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000].filter((value) => value >= moonCurrentMc).map((value) => <button key={value} onClick={() => setMoonMarketCap(value)}>{value >= 1_000_000_000 ? `${value / 1_000_000_000}B` : `${value / 1_000_000}M`}</button>)}</div>
+        </div>
+        <div className="moon-price"><span>Price / NET at target</span><strong>{moonPrice > 0 ? usd(moonPrice) : '—'}</strong><small>{Math.round(fund?.circulatingNet || 0).toLocaleString()} current circulating NET</small></div>
+      </div>
+      <div className="moon-rate">
+        <span><b>{(moonEpochRate * 100).toFixed(4)}%</b> live queued rate / epoch</span>
+        <span><b>{(((1 + moonEpochRate) ** 3 - 1) * 100).toFixed(4)}%</b> estimated compounded daily rate</span>
+        <span><b>3</b> auto-compounding epochs / day</span>
+      </div>
+      <div className="moon-now"><span>Bag at target today</span><strong>{moonBagNet.toLocaleString(undefined, { maximumFractionDigits: 4 })} NET</strong><b>{moonPrice > 0 ? usd(moonBagNet * moonPrice) : '—'}</b></div>
+      <div className="moon-projections">{moonProjections.map((projection) => <article key={projection.label}>
+        <label>{projection.label}</label>
+        <small>Projected staked balance</small><strong>{projection.balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} NET</strong>
+        <small>NET earned</small><b>+{projection.earned.toLocaleString(undefined, { maximumFractionDigits: 4 })} NET</b>
+        <small>Value at selected market cap</small><em>{moonPrice > 0 ? usd(projection.value) : '—'}</em>
+      </article>)}</div>
+      <div className="moon-note"><b>Moon Math assumptions:</b> the currently queued staking rate repeats unchanged for every epoch; rewards compound automatically three times daily; the selected price is target circulating market cap divided by today’s circulating NET. Future rate changes, supply changes, taxes, slippage and market liquidity are not modeled. Direct staking projections only—not WinNET lottery returns. This is hypothetical math, not a price or earnings guarantee.</div>
     </Window> : <Window title="Complete Staking Activity">
       <div className="tablewrap"><table><thead><tr><th>Activity</th><th>Wallet / Epoch</th><th className="num">Amount</th><th>Time (UTC)</th><th className="num">Block</th></tr></thead><tbody>{data.activity.map((a) => <tr key={a.id}><td><span className={`event ${a.type.toLowerCase()}`}>{a.type === 'Staked' ? <ArrowDownToLine size={12}/> : a.type === 'Unstaked' ? <ArrowUpFromLine size={12}/> : <RefreshCw size={12}/>} {a.type}</span></td><td>{a.actor ? <Address value={a.actor}/> : `Epoch ${a.epoch}`}</td><td className={`num ${a.type === 'Unstaked' ? 'down' : 'up'}`}>{a.type === 'Unstaked' ? '−' : '+'}{amount(a.amount)} NET</td><td>{when(a.timestamp)}</td><td className="num"><a href={`${CONFIG.explorer}/tx/${a.tx}`} target="_blank" rel="noreferrer">#{a.block.toLocaleString()}</a></td></tr>)}</tbody></table></div>
     </Window>}
