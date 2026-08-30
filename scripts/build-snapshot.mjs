@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createPublicClient, http } from 'viem';
-import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchLogs, fetchRawHistoricalLogs, hydrate, latestBlock, serialize, viewModel } from '../src/indexer.js';
+import { CONFIG, applyLogs, applyWinNetLogs, emptyState, fetchHistoricalLogs, fetchLogs, fetchRawHistoricalLogs, hydrate, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
@@ -127,7 +127,7 @@ await mkdir('public', { recursive: true });
 let previous = null;
 try { previous = JSON.parse(await readFile('public/snapshot.json', 'utf8')); } catch {}
 const state = hydrate(previous || emptyState());
-const chainHead = await latestBlock();
+const chainHead = Number(await client.getBlockNumber());
 const cutoff = chainHead - 25;
 const stopAt = state.cutoffBlock;
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
