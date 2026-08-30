@@ -27,7 +27,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run snapshot
+      - name: Build snapshot with retries
+        run: |
+          for attempt in 1 2 3; do
+            if npm run snapshot; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Snapshot attempt $attempt failed; retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          exit 1
       - name: Commit changed snapshot
         run: |
           if git diff --quiet -- public/snapshot.json; then exit 0; fi
