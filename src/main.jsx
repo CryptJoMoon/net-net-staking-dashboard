@@ -9,7 +9,10 @@ const UNIT = 10n ** 9n;
 const WAD = 10n ** 18n;
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'liquidUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'morphoAssets', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'polRfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'backingPerToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
-const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const stakingAbi = [
+  { type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'epoch', stateMutability: 'view', inputs: [], outputs: [{ name: 'length', type: 'uint64' }, { name: 'number', type: 'uint64' }, { name: 'end', type: 'uint64' }, { name: 'distribute', type: 'uint256' }] },
+];
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
@@ -124,10 +127,11 @@ function App() {
       try {
         const names = ['rfv', 'liquidUsdg', 'morphoAssets', 'polRfv', 'backingPerToken'];
         const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
-        const [values, totalSupply, totalStaked, priceWad, excludedBalances, sleeveResponse, playingTonight] = await Promise.all([
+        const [values, totalSupply, totalStaked, epochState, priceWad, excludedBalances, sleeveResponse, playingTonight] = await Promise.all([
           Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName }))),
           publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'totalSupply' }),
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
+          publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'epoch' }).catch(() => null),
           publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
           Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
           fetchSleeveBalances(),
@@ -138,10 +142,13 @@ function App() {
         if (liveSleeveValue != null) rememberSleeveValue(liveSleeveValue);
         const rwaSleeveUsd = liveSleeveValue ?? cachedSleeveValue();
         const supplyNet = Number(totalSupply) / 1e9, stakedNet = Number(totalStaked) / 1e9, price = Number(priceWad) / 1e18;
+        const queuedReward = epochState == null ? null : Number(epochState[3]) / 1e9;
+        const epochRate = queuedReward == null || stakedNet <= 0 ? null : queuedReward / stakedNet;
+        const dailyRate = epochRate == null ? null : (1 + epochRate) ** 3 - 1;
         const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
         const circulatingNet = Math.max(0, supplyNet - excludedNet);
         const onchainRfv = Number(values[0]) / 1e18;
-        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, playingTonight: playingTonight == null ? null : Number(playingTonight), circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, queuedReward, epochRate, dailyRate, playingTonight: playingTonight == null ? null : Number(playingTonight), circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
       } catch { if (alive) setFund(null); }
     };
     loadFund(); const timer = setInterval(loadFund, 60_000);
@@ -227,8 +234,8 @@ function App() {
   };
   const rows = useMemo(() => {
     if (!data) return []; const q = query.toLowerCase().trim();
-    const direct = data.stakers.filter((row) => !excludedAddresses.has(row.address.toLowerCase())).map((row) => ({ ...row, venue: 'Direct', lotteryWinnings: '0', lotteryWins: 0 }));
-    const lottery = (data.winNetStakers || []).map((row) => ({ ...row, lotteryWinnings: row.prizes || row.rewards || '0' }));
+    const direct = data.stakers.filter((row) => !excludedAddresses.has(row.address.toLowerCase())).map((row) => ({ ...row, venue: 'Direct', directBalance: row.balance, lotteryWinnings: '0', lotteryWins: 0 }));
+    const lottery = (data.winNetStakers || []).map((row) => ({ ...row, directBalance: '0', lotteryWinnings: row.prizes || row.rewards || '0' }));
     let source;
     if (venue === 'direct') source = direct;
     else if (venue === 'winnet') source = lottery;
@@ -237,13 +244,13 @@ function App() {
       for (const row of [...direct, ...lottery]) {
         const key = row.address.toLowerCase(), current = combined.get(key);
         if (!current) combined.set(key, { ...row });
-        else combined.set(key, { ...current, added: (BigInt(current.added || 0) + BigInt(row.added || 0)).toString(), removed: (BigInt(current.removed || 0) + BigInt(row.removed || 0)).toString(), rewards: (BigInt(current.rewards || 0) + BigInt(row.rewards || 0)).toString(), lotteryWinnings: (BigInt(current.lotteryWinnings || 0) + BigInt(row.lotteryWinnings || 0)).toString(), lotteryWins: (current.lotteryWins || 0) + (row.lotteryWins || 0), balance: (BigInt(current.balance || 0) + BigInt(row.balance || 0)).toString(), stakes: (current.stakes || 0) + (row.stakes || 0), unstakes: (current.unstakes || 0) + (row.unstakes || 0), lastActive: new Date(current.lastActive || 0) > new Date(row.lastActive || 0) ? current.lastActive : row.lastActive, venue: current.venue === row.venue ? current.venue : 'Direct + WinNET' });
+        else combined.set(key, { ...current, added: (BigInt(current.added || 0) + BigInt(row.added || 0)).toString(), removed: (BigInt(current.removed || 0) + BigInt(row.removed || 0)).toString(), rewards: (BigInt(current.rewards || 0) + BigInt(row.rewards || 0)).toString(), directBalance: (BigInt(current.directBalance || 0) + BigInt(row.directBalance || 0)).toString(), lotteryWinnings: (BigInt(current.lotteryWinnings || 0) + BigInt(row.lotteryWinnings || 0)).toString(), lotteryWins: (current.lotteryWins || 0) + (row.lotteryWins || 0), balance: (BigInt(current.balance || 0) + BigInt(row.balance || 0)).toString(), stakes: (current.stakes || 0) + (row.stakes || 0), unstakes: (current.unstakes || 0) + (row.unstakes || 0), lastActive: new Date(current.lastActive || 0) > new Date(row.lastActive || 0) ? current.lastActive : row.lastActive, venue: current.venue === row.venue ? current.venue : 'Direct + WinNET' });
       }
       source = [...combined.values()];
     }
     return source.filter((r) => !q || r.address.toLowerCase().includes(q)).sort((a, b) => {
       if (sort === 'address') return a.address.localeCompare(b.address);
-      const sortField = sort === 'usdValue' ? 'balance' : sort;
+      const sortField = sort === 'usdValue' ? 'balance' : sort === 'dailyEarnings' ? 'directBalance' : sort;
       const av = BigInt(a[sortField] || 0), bv = BigInt(b[sortField] || 0); return av === bv ? 0 : av > bv ? -1 : 1;
     });
   }, [data, venue, query, sort, excludedAddresses]);
@@ -300,8 +307,8 @@ function App() {
     </div>
     <div className="ticker"><div><span>CONTRACT</span> {short(CONFIG.staking)} <b>◆</b> <span>NETWORK</span> ROBINHOOD CHAIN <b>◆</b> <span>UPDATED</span> {when(data.indexedAt)} <b>◆</b> <span>HEAD</span> #{head?.toLocaleString() || '—'}</div></div>
     {tab === 'stakers' ? <Window title="Shareholder Register">
-      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><div className="filters"><select value={venue} onChange={(e) => setVenue(e.target.value)}><option value="all">Venue: all</option><option value="direct">Venue: direct staking</option><option value="winnet">Venue: WinNET lottery</option></select><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="balance">Sort: balance</option><option value="usdValue">Sort: USD value</option><option value="lotteryWinnings">Sort: lottery winnings USD</option><option value="lotteryWins">Sort: lottery win count</option><option value="rewards">Sort: rewards</option><option value="added">Sort: additions</option><option value="removed">Sort: removals</option><option value="address">Sort: address</option></select></div></div>
-      <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th>Venue</th><th className="num">Adds</th><th className="num">Removals</th><th className="num">Rewards</th><th className="num">Lottery Wins</th><th className="num">Lottery Winnings USD</th><th className="num">Stake Balance</th><th className="num">Current USD Value</th><th className="num">Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={`${r.address}-${r.venue}`}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'Stake holder'}</small></td><td><span className={`venue ${r.venue.toLowerCase().replaceAll(' ', '-')}`}>{r.venue}</span></td><td className="num up">+{amount(r.added)}</td><td className="num down">−{amount(r.removed)}</td><td className="num reward">+{amount(r.rewards)}</td><td className="num reward">{r.lotteryWins > 0 ? r.lotteryWins.toLocaleString() : '—'}</td><td className="num reward">{BigInt(r.lotteryWinnings || 0) > 0n ? (fund?.price > 0 ? usd(Number(r.lotteryWinnings) / 1e9 * fund.price) : '—') : '—'}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num muted">{r.stakes} / {r.unstakes}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
+      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search wallet address" /></label><div className="filters"><select value={venue} onChange={(e) => setVenue(e.target.value)}><option value="all">Venue: all</option><option value="direct">Venue: direct staking</option><option value="winnet">Venue: WinNET lottery</option></select><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="balance">Sort: balance</option><option value="usdValue">Sort: USD value</option><option value="lotteryWinnings">Sort: lottery winnings USD</option><option value="lotteryWins">Sort: lottery win count</option><option value="dailyEarnings">Sort: estimated daily earnings</option><option value="rewards">Sort: rewards</option><option value="added">Sort: additions</option><option value="removed">Sort: removals</option><option value="address">Sort: address</option></select></div></div>
+      <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th>Venue</th><th className="num">Adds</th><th className="num">Removals</th><th className="num">Rewards</th><th className="num">Lottery Wins</th><th className="num">Lottery Winnings USD</th><th className="num">Stake Balance</th><th className="num">Current USD Value</th><th className="num">Est. Direct Earnings / Day<small className="th-note">3 epochs · live queued rate</small></th><th className="num">Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={`${r.address}-${r.venue}`}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'Stake holder'}</small></td><td><span className={`venue ${r.venue.toLowerCase().replaceAll(' ', '-')}`}>{r.venue}</span></td><td className="num up">+{amount(r.added)}</td><td className="num down">−{amount(r.removed)}</td><td className="num reward">+{amount(r.rewards)}</td><td className="num reward">{r.lotteryWins > 0 ? r.lotteryWins.toLocaleString() : '—'}</td><td className="num reward">{BigInt(r.lotteryWinnings || 0) > 0n ? (fund?.price > 0 ? usd(Number(r.lotteryWinnings) / 1e9 * fund.price) : '—') : '—'}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num reward">{fund?.dailyRate != null && BigInt(r.directBalance || 0) > 0n ? <>{(Number(r.directBalance) / 1e9 * fund.dailyRate).toLocaleString(undefined, { maximumFractionDigits: 4 })} NET<small className="last">{fund.price > 0 ? `${usd(Number(r.directBalance) / 1e9 * fund.dailyRate * fund.price)} at current TWAP` : 'USD value loading'}</small></> : '—'}</td><td className="num muted">{r.stakes} / {r.unstakes}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
       <div className="pager"><span>{rows.length.toLocaleString()} records</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {pages}</b><button disabled={page === pages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
     </Window> : tab === 'flow' ? <Window title="24-Hour Staking Flow — Wallet Breakdown" className="flow-window">
       <div className="flow-summary">
