@@ -26,6 +26,8 @@ const WINNET_DRAW_CONTROLLER = '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70';
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
+const MOON_BAG_KEY = 'netnet-moon-math-bag-v1';
+const MOON_TARGETS_KEY = 'netnet-moon-math-market-targets-v1';
 const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
 let snapshotSleeveFallback = null;
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
@@ -98,7 +100,34 @@ function App() {
   const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
   const [flowFilter, setFlowFilter] = useState('all'), [flowSort, setFlowSort] = useState('outflow');
-  const [moonBag, setMoonBag] = useState('100'), [moonScale, setMoonScale] = useState(0);
+  const [moonBag, setMoonBag] = useState(() => { try { return localStorage.getItem(MOON_BAG_KEY) ?? '100'; } catch { return '100'; } }), [moonScale, setMoonScale] = useState(0);
+  const [moonPriceEdit, setMoonPriceEdit] = useState(null);
+  const [cryptoTargets, setCryptoTargets] = useState(() => { try { return JSON.parse(localStorage.getItem(MOON_TARGETS_KEY) || 'null') || {}; } catch { return {}; } });
+  useEffect(() => { try { localStorage.setItem(MOON_BAG_KEY, moonBag); } catch { /* storage can be disabled */ } }, [moonBag]);
+  useEffect(() => {
+    let alive = true;
+    const loadTargets = async () => {
+      try {
+        const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false');
+        if (!response.ok) throw new Error('Market target feed unavailable');
+        const markets = await response.json();
+        const next = {
+          eth: Number(markets.find((coin) => coin.id === 'ethereum')?.current_price) || null,
+          btc: Number(markets.find((coin) => coin.id === 'bitcoin')?.current_price) || null,
+          top10MarketCap: Number(markets[9]?.market_cap) || null,
+          top10Name: markets[9]?.name || null,
+          updatedAt: new Date().toISOString(),
+        };
+        if (alive && next.eth && next.btc && next.top10MarketCap) {
+          setCryptoTargets(next);
+          try { localStorage.setItem(MOON_TARGETS_KEY, JSON.stringify(next)); } catch { /* storage can be disabled */ }
+        }
+      } catch { /* retain the last successful targets */ }
+    };
+    loadTargets();
+    const timer = setInterval(loadTargets, 10 * 60_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
   const refresh = async (base, quiet = false) => {
     try {
       if (!quiet) setStatus('Checking the chain…'); setError('');
@@ -299,6 +328,11 @@ function App() {
     const denominator = Math.log(moonMaxMc) - Math.log(moonCurrentMc);
     setMoonScale(denominator > 0 ? Math.round((Math.log(bounded) - Math.log(moonCurrentMc)) / denominator * 1000) : 0);
   };
+  const setMoonPriceTarget = (price) => {
+    if (!(price > 0) || !(fund?.supplyNet > 0)) return;
+    setMoonPriceEdit(null);
+    setMoonMarketCap(price * fund.supplyNet);
+  };
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
       <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><button className={tab === 'moon' ? 'active' : ''} onClick={() => setTab('moon')}><u>M</u>oon Math</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
@@ -351,14 +385,20 @@ function App() {
         <label className="moon-bag"><span>Your bag size</span><div><input type="number" min="0" step="any" value={moonBag} onChange={(event) => setMoonBag(event.target.value)} /><b>NET</b></div><small>Assumes the entire bag is directly staked</small></label>
         <div className="moon-market">
           <div className="moon-market-head"><span>Target fully diluted market cap</span><strong>{usd(moonTargetMc)}</strong></div>
-          <input type="range" min="0" max="1000" step="1" value={moonScale} onChange={(event) => setMoonScale(Number(event.target.value))} aria-label="Target circulating market cap" />
+          <input type="range" min="0" max="1000" step="1" value={moonScale} onChange={(event) => { setMoonPriceEdit(null); setMoonScale(Number(event.target.value)); }} aria-label="Target fully diluted market cap" />
           <div className="moon-range-labels"><span>{usd(moonCurrentMc)} current</span><span>$100B</span></div>
-          <div className="moon-presets"><button onClick={() => setMoonMarketCap(moonCurrentMc)}>Current</button>{[100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000].filter((value) => value >= moonCurrentMc).map((value) => <button key={value} onClick={() => setMoonMarketCap(value)}>{value >= 1_000_000_000 ? `${value / 1_000_000_000}B` : `${value / 1_000_000}M`}</button>)}</div>
+          <div className="moon-presets"><button onClick={() => { setMoonPriceEdit(null); setMoonMarketCap(moonCurrentMc); }}>Current</button>{[100_000_000, 1_000_000_000, 10_000_000_000, 100_000_000_000].filter((value) => value >= moonCurrentMc).map((value) => <button key={value} onClick={() => { setMoonPriceEdit(null); setMoonMarketCap(value); }}>{value >= 1_000_000_000 ? `${value / 1_000_000_000}B` : `${value / 1_000_000}M`}</button>)}</div>
         </div>
-        <div className="moon-price"><span>Price / NET at target</span><strong>{moonPrice > 0 ? usd(moonPrice) : '—'}</strong><small>{Math.round(fund?.supplyNet || 0).toLocaleString()} current total NET supply</small></div>
+        <div className="moon-price"><span>Editable price / NET</span><div className="moon-price-input"><b>$</b><input type="number" min="0" step="any" value={moonPriceEdit ?? (moonPrice > 0 ? moonPrice.toFixed(2) : '')} onFocus={() => setMoonPriceEdit(moonPrice > 0 ? moonPrice.toFixed(2) : '')} onChange={(event) => { const value = event.target.value; setMoonPriceEdit(value); const price = Number(value); if (price > 0 && fund?.supplyNet > 0) setMoonMarketCap(price * fund.supplyNet); }} onBlur={() => setMoonPriceEdit(null)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} aria-label="Target price per NET" /></div><small>Editing the price moves the market-cap slider · {Math.round(fund?.supplyNet || 0).toLocaleString()} total NET</small></div>
+      </div>
+      <div className="moon-goals">
+        <button disabled={!cryptoTargets.eth} onClick={() => setMoonPriceTarget(cryptoTargets.eth)}><span>1 🥅 = 1 ETH</span><small>{cryptoTargets.eth ? usd(cryptoTargets.eth) + ' / NET' : 'Live ETH price loading'}</small></button>
+        <button disabled={!cryptoTargets.btc} onClick={() => setMoonPriceTarget(cryptoTargets.btc)}><span>1 🥅 = 1 BITCOIN</span><small>{cryptoTargets.btc ? usd(cryptoTargets.btc) + ' / NET' : 'Live BTC price loading'}</small></button>
+        <button onClick={() => setMoonPriceTarget(1_000_000)}><span>1 🥅 = $1,000,000</span><small>{fund?.supplyNet > 0 ? usd(1_000_000 * fund.supplyNet) + ' fully diluted MC' : 'Target price'}</small></button>
+        <button disabled={!cryptoTargets.top10MarketCap} onClick={() => { setMoonPriceEdit(null); setMoonMarketCap(cryptoTargets.top10MarketCap); }}><span>$NET IN CRYPTO TOP 10</span><small>{cryptoTargets.top10MarketCap ? usd(cryptoTargets.top10MarketCap) + (cryptoTargets.top10Name ? ` · current #10: ${cryptoTargets.top10Name}` : '') : 'Top-10 threshold loading'}</small></button>
       </div>
       <div className="moon-rate">
-        <span><b>{(moonEpochRate * 100).toFixed(4)}%</b> live queued rate / epoch</span>
+        <span><b>{(moonEpochRate * 100).toFixed(4)}%</b> live Distributor rate / epoch</span>
         <span><b>{(((1 + moonEpochRate) ** 3 - 1) * 100).toFixed(4)}%</b> estimated compounded daily rate</span>
         <span><b>3</b> auto-compounding epochs / day</span>
       </div>
