@@ -13,6 +13,63 @@ const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
+
+async function fetchRpcCodes(addresses) {
+  const codes = new Map();
+  for (let start = 0; start < addresses.length; start += 200) {
+    const batch = addresses.slice(start, start + 200);
+    let result = null;
+    for (let attempt = 0; attempt < 8 && !result; attempt += 1) {
+      try {
+        const response = await fetch(CONFIG.rpc, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(batch.map((address, index) => ({ jsonrpc: '2.0', id: index, method: 'eth_getCode', params: [address, 'latest'] }))),
+        });
+        if (response.ok) result = await response.json();
+      } catch {}
+      if (!result) await pause(Math.min(10_000, 1_000 * (attempt + 1)));
+    }
+    if (!Array.isArray(result)) throw new Error('Unable to classify holder bytecode through RPC');
+    for (const item of result) codes.set(batch[item.id], item.result || '0x');
+    await pause(150);
+  }
+  return codes;
+}
+
+async function fetchLegacyHolderWallets(token) {
+  const addresses = [];
+  const offset = 1000;
+  for (let page = 1; page <= 1000; page += 1) {
+    const params = new URLSearchParams({ module: 'token', action: 'getTokenHolders', contractaddress: token, page: String(page), offset: String(offset) });
+    let json = null;
+    for (let attempt = 0; attempt < 8 && !json; attempt += 1) {
+      try {
+        const response = await fetch(`${CONFIG.explorer}/api?${params}`, { headers: { accept: 'application/json' } });
+        if (response.ok) json = await response.json();
+      } catch {}
+      if (!json) await pause(Math.min(10_000, 1_000 * (attempt + 1)));
+    }
+    if (!Array.isArray(json?.result)) throw new Error(`Unable to read legacy holders for ${token}`);
+    const current = json.result.map((item) => item.address?.toLowerCase()).filter(Boolean);
+    addresses.push(...current);
+    if (current.length < offset) break;
+    await pause(250);
+  }
+  const unique = [...new Set(addresses)];
+  const codes = await fetchRpcCodes(unique);
+  const wallets = new Set(), excluded = new Set(knownInfra);
+  for (const address of unique) {
+    const code = (codes.get(address) || '0x').toLowerCase();
+    const isContract = code !== '0x' && code !== '0x0';
+    const isDelegatedWallet = code.startsWith('0xef0100');
+    if (knownInfra.has(address) || (isContract && !isDelegatedWallet && !confirmedUserWallets.has(address))) excluded.add(address);
+    else wallets.add(address);
+  }
+  console.log(`Legacy holder fallback: token=${token.slice(0, 8)} holders=${wallets.size} contracts_excluded=${excluded.size}`);
+  return { wallets, excluded };
+}
 const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
 let rpcTimeBaseBlock = 0, rpcTimeBaseMs = Date.now(), rpcBlockMs = 100;
 
@@ -116,7 +173,10 @@ async function fetchHolderWallets(token) {
       try {
         const response = await fetch(`${CONFIG.api}/tokens/${token}/holders${query}`, { headers: { accept: 'application/json' } });
         if (response.ok) page = await response.json();
-        else console.warn(`Holder page retry: token=${token.slice(0, 8)} status=${response.status} attempt=${attempt + 1}`);
+        else {
+          console.warn(`Holder page retry: token=${token.slice(0, 8)} status=${response.status} attempt=${attempt + 1}`);
+          if (response.status === 403) return fetchLegacyHolderWallets(token);
+        }
       } catch (error) { console.warn(`Holder page retry: token=${token.slice(0, 8)} error=${error.message} attempt=${attempt + 1}`); }
       if (!page) await pause(Math.min(15_000, 1_500 * (attempt + 1)));
     }
