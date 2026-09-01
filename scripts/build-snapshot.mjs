@@ -87,19 +87,35 @@ const rpcAddress = (topic = '') => `0x${topic.slice(-40)}`;
 async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event = null, onProgress } = {}) {
   const raw = [];
   const chunkSize = event ? 200_000 : 50_000;
-  for (let from = fromBlock; from <= toBlock; from += chunkSize) {
-    const to = Math.min(toBlock, from + chunkSize - 1);
-    let logs = null;
-    for (let attempt = 0; attempt < 10 && !logs; attempt += 1) {
-      try { logs = await client.getLogs({ address, ...(event ? { event } : {}), fromBlock: BigInt(from), toBlock: BigInt(to) }); }
-      catch (error) {
-        if (attempt === 9) throw error;
-        await pause(Math.min(12_000, 1_000 * (attempt + 1)));
+  let completedRanges = 0;
+
+  async function fetchRange(from, to, depth = 0) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        const logs = await client.getLogs({ address, ...(event ? { event } : {}), fromBlock: BigInt(from), toBlock: BigInt(to) });
+        completedRanges += 1;
+        onProgress?.({ address, page: completedRanges, count: raw.length + logs.length });
+        return logs;
+      } catch (error) {
+        const message = [error?.message, error?.details, error?.cause?.message].filter(Boolean).join(' ');
+        const shouldSplit = from < to && (/exceeds limit of 10000|internal server|timeout|invalid parameters/i.test(message) || attempt >= 2);
+        if (shouldSplit) {
+          const middle = Math.floor((from + to) / 2);
+          const older = await fetchRange(from, middle, depth + 1);
+          const newer = await fetchRange(middle + 1, to, depth + 1);
+          return [...older, ...newer];
+        }
+        if (attempt === 5) throw error;
+        await pause(Math.min(10_000, 750 * (attempt + 1)));
       }
     }
-    raw.push(...logs);
+    return [];
+  }
+
+  for (let from = fromBlock; from <= toBlock; from += chunkSize) {
+    const to = Math.min(toBlock, from + chunkSize - 1);
+    raw.push(...await fetchRange(from, to));
     await pause(event ? 100 : 400);
-    onProgress?.({ address, page: Math.floor((from - fromBlock) / chunkSize) + 1, count: raw.length });
   }
 
   return raw.map((log) => {
