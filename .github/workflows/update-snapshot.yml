@@ -15,7 +15,7 @@ concurrency:
   group: staking-ledger
   # Never allow an older checkout to rebase a stale snapshot over newer
   # indexer code. A fresh run starts from the newest main commit.
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   update:
     runs-on: ubuntu-latest
