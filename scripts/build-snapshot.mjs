@@ -98,7 +98,7 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event 
       }
     }
     raw.push(...logs);
-    await pause(400);
+    await pause(event ? 100 : 400);
     onProgress?.({ address, page: Math.floor((from - fromBlock) / chunkSize) + 1, count: raw.length });
   }
 
