@@ -195,7 +195,17 @@ function App() {
     return [...(state?.metricsHistory || [])].filter((point) => new Date(point.timestamp).getTime() <= cutoff && validSleeveMark(point.rwaSleeveUsd) && Number.isFinite(point.trueRfvUsd)).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null;
   }, [state]);
   const latestMetrics = useMemo(() => [...(state?.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0] || null, [state]);
-  const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())].filter((address) => !confirmedUserWallets.has(address))), [latestMetrics]);
+  const verifiedHolderPoints = useMemo(() => {
+    const points = [...(state?.metricsHistory || [])].filter((point) => Number.isFinite(point.trueHolderCount)).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const explicitlyVerified = points.filter((point) => point.holderMetricsFresh === true);
+    return explicitlyVerified.length ? explicitlyVerified : points.filter((point) => point.holderMetricsFresh !== false);
+  }, [state]);
+  const latestHolderMetrics = verifiedHolderPoints[0] || null;
+  const holderBaseline24h = useMemo(() => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    return verifiedHolderPoints.find((point) => new Date(point.holderMetricsAt || point.timestamp).getTime() <= cutoff) || null;
+  }, [verifiedHolderPoints]);
+  const excludedAddresses = useMemo(() => new Set([...knownInfra, ...(latestHolderMetrics?.excludedHolderAddresses || []).map((address) => address.toLowerCase())].filter((address) => !confirmedUserWallets.has(address))), [latestHolderMetrics]);
   const flowAnalysis = useMemo(() => {
     const empty = { rows: [], joined: 0, exited: 0, increased: 0, reduced: 0, walletAdds: 0n, walletRemovals: 0n, protocolAdds: 0n, protocolRemovals: 0n };
     if (!data) return empty;
@@ -297,10 +307,10 @@ function App() {
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
   const netFlow24h = BigInt(data.adds24h) - BigInt(data.removals24h);
   const activeStakers = data.stakers.filter((r) => BigInt(r.balance) > 0n && !excludedAddresses.has(r.address.toLowerCase())).length;
-  const walletHolderCount = latestMetrics?.walletHolderCount || null;
-  const walletStakerCount = latestMetrics?.walletStakerCount || activeStakers;
-  const trueHolderCount = latestMetrics?.trueHolderCount || walletHolderCount;
-  const trueStakerCount = latestMetrics?.trueStakerCount || walletStakerCount;
+  const walletHolderCount = latestHolderMetrics?.walletHolderCount || null;
+  const walletStakerCount = latestHolderMetrics?.walletStakerCount || activeStakers;
+  const trueHolderCount = latestHolderMetrics?.trueHolderCount || walletHolderCount;
+  const trueStakerCount = latestHolderMetrics?.trueStakerCount || walletStakerCount;
   const addressStakingPct = trueHolderCount > 0 ? trueStakerCount / trueHolderCount * 100 : null;
   const nonStakerCount = trueHolderCount > 0 ? Math.max(0, trueHolderCount - trueStakerCount) : null;
   const winNetParticipants = (data.winNetStakers || []).filter((row) => BigInt(row.balance) > 0n).length;
@@ -354,7 +364,7 @@ function App() {
       <Readout icon={Coins} label="Fully diluted market cap" value={fund ? usd(fund.fdv) : 'Loading…'} sub="Total supply × TWAP" change={change24h(fund?.fdv, baseline24h?.fdv, (n) => `$${Math.round(Math.abs(n)).toLocaleString()}`)} />
       <Readout icon={Activity} label="Market price" value={fund?.price > 0 ? `${fund.price.toFixed(4)} USDG` : 'Loading…'} sub="One-hour NET/USDG TWAP" change={change24h(fund?.price > 0 ? fund.price : null, baseline24h?.price, (n) => Math.abs(n).toFixed(4))} />
       <Readout icon={Users} label="Supply" value={fund ? `${Math.round(fund.supplyNet).toLocaleString()} NET` : 'Loading…'} sub={fund ? `${fund.stakedPct.toFixed(1)}% staked · ${Math.round(fund.stakedNet).toLocaleString()} NET` : 'Live on-chain supply'} change={change24h(fund?.supplyNet, baseline24h?.supplyNet)} />
-      <Readout icon={Users} label="True unique holders" value={trueHolderCount?.toLocaleString() || 'Indexing…'} sub={latestMetrics?.trueHolderCount ? `${latestMetrics.directHolderCount.toLocaleString()} NET/sNET · ${latestMetrics.winNetHolderCount.toLocaleString()} WinNET · ${latestMetrics.wsNetHolderCount.toLocaleString()} wsNET · ${latestMetrics.holderOverlapsRemoved.toLocaleString()} overlaps removed · ${trueStakerCount.toLocaleString()} stakers (${addressStakingPct.toFixed(1)}%) · ${nonStakerCount.toLocaleString()} not staking` : 'Combining direct and contract-underlying holders'} change={change24h(trueHolderCount, baseline24h?.trueHolderCount)} />
+      <Readout icon={Users} label="True unique holders" value={trueHolderCount?.toLocaleString() || 'Indexing…'} sub={latestHolderMetrics?.trueHolderCount ? `${latestHolderMetrics.directHolderCount.toLocaleString()} NET/sNET · ${latestHolderMetrics.winNetHolderCount.toLocaleString()} WinNET · ${latestHolderMetrics.wsNetHolderCount.toLocaleString()} wsNET · ${latestHolderMetrics.holderOverlapsRemoved.toLocaleString()} overlaps removed · ${trueStakerCount.toLocaleString()} stakers (${addressStakingPct.toFixed(1)}%) · ${nonStakerCount.toLocaleString()} not staking · verified ${ago(latestHolderMetrics.holderMetricsAt || latestHolderMetrics.timestamp)}` : 'Combining direct and contract-underlying holders'} change={change24h(trueHolderCount, holderBaseline24h?.trueHolderCount)} />
       <Readout icon={Users} label="Direct wallet stake" value={stakeDistribution ? `${amount(stakeDistribution.total, 2)} sNET` : 'Loading…'} sub={stakeDistribution ? `${stakeDistribution.count.toLocaleString()} active wallet positions · contracts excluded` : 'Wallet-only staking balance'} />
       <Readout icon={Coins} label="WinNET pooled stake" value={`${amount(venueStake.winNet, 2)} sNET`} sub={`${winNetParticipants.toLocaleString()} active principal wallets${fund?.playingTonight != null ? ` · ${fund.playingTonight.toLocaleString()} playing tonight` : ''}`} />
       <Readout icon={Coins} label="wsNET collateral wrapper" value={`${amount(venueStake.wsNet, 2)} sNET`} sub="Wrapped staked NET for lending/perpetual collateral · not WinNET lottery stake" />
