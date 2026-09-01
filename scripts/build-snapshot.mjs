@@ -6,6 +6,7 @@ const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', i
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
+const transferEvent = { type: 'event', name: 'Transfer', inputs: [{ name: 'from', type: 'address', indexed: true }, { name: 'to', type: 'address', indexed: true }, { name: 'value', type: 'uint256', indexed: false }] };
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
 const DISCLOSED_SLEEVE_USD = 863_750;
@@ -83,14 +84,14 @@ const MAIN_TOPICS = {
 const rpcWord = (data = '0x', index = 0) => `0x${data.slice(2 + index * 64, 2 + (index + 1) * 64)}`;
 const rpcAddress = (topic = '') => `0x${topic.slice(-40)}`;
 
-async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, onProgress } = {}) {
+async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event = null, onProgress } = {}) {
   const raw = [];
   const chunkSize = 50_000;
   for (let from = fromBlock; from <= toBlock; from += chunkSize) {
     const to = Math.min(toBlock, from + chunkSize - 1);
     let logs = null;
     for (let attempt = 0; attempt < 10 && !logs; attempt += 1) {
-      try { logs = await client.getLogs({ address, fromBlock: BigInt(from), toBlock: BigInt(to) }); }
+      try { logs = await client.getLogs({ address, ...(event ? { event } : {}), fromBlock: BigInt(from), toBlock: BigInt(to) }); }
       catch (error) {
         if (attempt === 9) throw error;
         await pause(Math.min(12_000, 1_000 * (attempt + 1)));
@@ -152,6 +153,19 @@ async function fetchRpcWinNetDraws(fromBlock, toBlock) {
   return logs.map((log) => ({ address: log.address, block_number: Number(log.blockNumber), block_timestamp: timestamps.get(log.blockNumber.toString()), data: log.data, index: Number(log.logIndex), topics: log.topics, transaction_hash: log.transactionHash }));
 }
 
+function applyHolderTransferLogs(balances, logs) {
+  for (const log of logs) {
+    if (log.topics?.[0]?.toLowerCase() !== MAIN_TOPICS.transfer) continue;
+    const from = rpcAddress(log.topics[1]).toLowerCase(), to = rpcAddress(log.topics[2]).toLowerCase();
+    const value = BigInt(log.data || 0);
+    if (from !== '0x0000000000000000000000000000000000000000') {
+      const current = balances.get(from) || 0n;
+      balances.set(from, current > value ? current - value : 0n);
+    }
+    if (to !== '0x0000000000000000000000000000000000000000') balances.set(to, (balances.get(to) || 0n) + value);
+  }
+}
+
 function isUserWalletAddress(address) {
   if (!address?.is_contract) return true;
   if (address.proxy_type?.toLowerCase() === 'eip7702') return true;
@@ -208,22 +222,32 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
   const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd))?.rwaSleeveUsd;
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
+  const vm = viewModel(state);
   let holderMetrics = null;
   if (classifyHolders) {
     try {
-      const [netHolders, sNetHolders, wsNetHolders] = await Promise.all([
-        fetchHolderWallets(CONFIG.net),
-        fetchHolderWallets(CONFIG.sNet),
-        fetchHolderWallets(WSNET_WRAPPER),
+      const candidateHolders = new Set([
+        ...[...state.netBalances].filter(([, balance]) => balance > 0n).map(([address]) => address),
+        ...[...state.gons].filter(([address, balance]) => address !== CONFIG.staking.toLowerCase() && balance > 0n).map(([address]) => address),
+        ...[...state.wsNetBalances].filter(([, balance]) => balance > 0n).map(([address]) => address),
+        ...vm.winNetStakers.filter((row) => BigInt(row.balance) > 0n).map((row) => row.address.toLowerCase()),
       ]);
-      const vm = viewModel(state);
-      const excludedAddresses = new Set([...netHolders.excluded, ...sNetHolders.excluded, ...wsNetHolders.excluded, ...knownInfra]);
+      const codes = await fetchRpcCodes([...candidateHolders]);
+      const excludedAddresses = new Set(knownInfra);
+      for (const address of candidateHolders) {
+        const code = (codes.get(address) || '0x').toLowerCase();
+        const isContract = code !== '0x' && code !== '0x0';
+        const isDelegatedWallet = code.startsWith('0xef0100');
+        if (isContract && !isDelegatedWallet && !confirmedUserWallets.has(address)) excludedAddresses.add(address);
+      }
       const directStakers = new Set(vm.stakers.filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => row.address.toLowerCase()));
-      const directHolders = new Set([...netHolders.wallets, ...sNetHolders.wallets, ...directStakers]);
+      const netHolders = [...state.netBalances].filter(([address, balance]) => balance > 0n && !excludedAddresses.has(address)).map(([address]) => address);
+      const sNetHolders = [...state.gons].filter(([address, balance]) => balance > 0n && !excludedAddresses.has(address)).map(([address]) => address);
+      const directHolders = new Set([...netHolders, ...sNetHolders, ...directStakers]);
       const winNetHolders = new Set(vm.winNetStakers.filter((row) => BigInt(row.balance) > 0n && !excludedAddresses.has(row.address.toLowerCase())).map((row) => row.address.toLowerCase()));
-      const wrappedHolders = new Set(wsNetHolders.wallets);
+      const wrappedHolders = new Set([...state.wsNetBalances].filter(([address, balance]) => balance > 0n && !excludedAddresses.has(address)).map(([address]) => address));
       const trueHolders = new Set([...directHolders, ...winNetHolders, ...wrappedHolders]);
-      const trueStakers = new Set([...sNetHolders.wallets, ...directStakers, ...winNetHolders, ...wrappedHolders]);
+      const trueStakers = new Set([...sNetHolders, ...directStakers, ...winNetHolders, ...wrappedHolders]);
       holderMetrics = {
         walletHolderCount: directHolders.size,
         walletStakerCount: directStakers.size,
@@ -236,10 +260,10 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
         excludedHolderAddresses: [...excludedAddresses],
       };
     } catch (error) { console.warn(`Holder classification fallback: ${error.message}`); }
-  } else console.log('Deferring holder classification until after the WinNET checkpoint');
+  } else console.log('Deferring holder classification until after the holder-ledger checkpoint');
   const supplyNet = Number(supply) / 1e9, stakedNet = Number(staked) / 1e9, price = Number(priceWad) / 1e18;
   const circulatingNet = Math.max(0, supplyNet - excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0));
-  const vm = viewModel(state), onchainRfv = Number(rfv) / 1e18;
+  const onchainRfv = Number(rfv) / 1e18;
   return { timestamp: measuredAt, block: state.cutoffBlock, totalStaked: Number(vm.totalStaked) / 1e9, activeStakers: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? vm.stakers.filter((row) => BigInt(row.balance) > 0n).length, totalRewards: Number(vm.totalRewards) / 1e9, onchainRfv, rwaSleeveUsd, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, holderMetricsFresh: Boolean(holderMetrics), holderMetricsAt: holderMetrics ? measuredAt : previousPoint?.holderMetricsAt ?? previousPoint?.timestamp ?? null, walletHolderCount: holderMetrics?.walletHolderCount ?? previousPoint?.walletHolderCount ?? null, walletStakerCount: holderMetrics?.walletStakerCount ?? previousPoint?.walletStakerCount ?? null, trueHolderCount: holderMetrics?.trueHolderCount ?? previousPoint?.trueHolderCount ?? null, trueStakerCount: holderMetrics?.trueStakerCount ?? previousPoint?.trueStakerCount ?? null, directHolderCount: holderMetrics?.directHolderCount ?? previousPoint?.directHolderCount ?? null, winNetHolderCount: holderMetrics?.winNetHolderCount ?? previousPoint?.winNetHolderCount ?? null, wsNetHolderCount: holderMetrics?.wsNetHolderCount ?? previousPoint?.wsNetHolderCount ?? null, holderOverlapsRemoved: holderMetrics?.holderOverlapsRemoved ?? previousPoint?.holderOverlapsRemoved ?? null, excludedHolderAddresses: holderMetrics?.excludedHolderAddresses ?? previousPoint?.excludedHolderAddresses ?? [...knownInfra], circulatingNet, price, circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null };
 }
 
@@ -264,6 +288,12 @@ rpcBlockMs = cutoff > stopAt ? Math.max(50, Math.min(1_000, (Date.now() - rpcTim
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
+const needsHolderBackfill = !previous || Number(previous.version || 1) < 7 || !previous.holderCutoffBlock;
+if (needsHolderBackfill) {
+  state.holderCutoffBlock = CONFIG.deploymentBlock - 1;
+  state.netBalances = new Map();
+  state.wsNetBalances = new Map();
+}
 if (needsWinNetBackfill) {
   state.winNetCutoffBlock = CONFIG.winNetDeploymentBlock - 1;
   state.winNetWallets = new Map();
@@ -279,7 +309,16 @@ const winNetDraws = await rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1,
 const rpcWinNetDraws = [];
 applyLogs(state, [...staking, ...sNet]);
 applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
-state.version = 6;
+const holderFromBlock = needsHolderBackfill ? CONFIG.deploymentBlock : state.holderCutoffBlock + 1;
+console.log(needsHolderBackfill ? `Backfilling holder ledgers from block ${holderFromBlock}` : `Updating holder ledgers after block ${state.holderCutoffBlock}`);
+const [netTransfers, wsNetTransfers] = await Promise.all([
+  rpcLogs(CONFIG.net, holderFromBlock, cutoff, { event: transferEvent, onProgress: progress }),
+  rpcLogs(WSNET_WRAPPER, holderFromBlock, cutoff, { event: transferEvent, onProgress: progress }),
+]);
+applyHolderTransferLogs(state.netBalances, netTransfers);
+applyHolderTransferLogs(state.wsNetBalances, wsNetTransfers);
+state.holderCutoffBlock = cutoff;
+state.version = 7;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
@@ -288,4 +327,4 @@ try {
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
-console.log(`Saved ${staking.length + sNet.length} staking and ${winNet.length + winNetDraws.length + rpcWinNetDraws.length} WinNET logs at block ${cutoff}`);
+console.log(`Saved ${staking.length + sNet.length} staking, ${winNet.length + winNetDraws.length + rpcWinNetDraws.length} WinNET, and ${netTransfers.length + wsNetTransfers.length} holder-transfer logs at block ${cutoff}`);
