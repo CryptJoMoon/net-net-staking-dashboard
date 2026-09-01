@@ -86,7 +86,7 @@ const rpcAddress = (topic = '') => `0x${topic.slice(-40)}`;
 
 async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event = null, onProgress } = {}) {
   const raw = [];
-  const chunkSize = 50_000;
+  const chunkSize = event ? 200_000 : 50_000;
   for (let from = fromBlock; from <= toBlock; from += chunkSize) {
     const to = Math.min(toBlock, from + chunkSize - 1);
     let logs = null;
