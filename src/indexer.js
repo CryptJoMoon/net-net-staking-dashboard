@@ -76,7 +76,7 @@ export function serialize(state) {
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
     wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
-    seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), holderCutoffBlock: state.holderCutoffBlock, netBalances: Object.fromEntries(state.netBalances || []), wsNetBalances: Object.fromEntries(state.wsNetBalances || []), metricsHistory: (state.metricsHistory || []).slice(-1200),
+    seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), holderCutoffBlock: state.holderCutoffBlock, netBalances: Object.fromEntries([...(state.netBalances || [])].map(([address, balance]) => [address, balance.toString()])), wsNetBalances: Object.fromEntries([...(state.wsNetBalances || [])].map(([address, balance]) => [address, balance.toString()])), metricsHistory: (state.metricsHistory || []).slice(-1200),
   };
 }
 
