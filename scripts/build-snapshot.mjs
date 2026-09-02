@@ -201,6 +201,25 @@ function applyHolderTransferLogs(balances, logs) {
   }
 }
 
+async function advanceHolderLedger(address, balances, fromBlock, targetBlock, onProgress, maxChunks = 12) {
+  let cursor = fromBlock, throughBlock = fromBlock - 1, logCount = 0;
+  for (let chunk = 0; chunk < maxChunks && cursor <= targetBlock; chunk += 1) {
+    const end = Math.min(targetBlock, cursor + 200_000 - 1);
+    try {
+      const logs = await rpcLogs(address, cursor, end, { event: transferEvent, onProgress });
+      applyHolderTransferLogs(balances, logs);
+      logCount += logs.length;
+      throughBlock = end;
+      cursor = end + 1;
+    } catch (error) {
+      console.warn(`Holder checkpoint paused: token=${address.slice(0, 8)} through=${throughBlock} error=${error?.shortMessage || error?.message}`);
+      break;
+    }
+    await pause(350);
+  }
+  return { throughBlock, logCount, complete: throughBlock >= targetBlock };
+}
+
 function isUserWalletAddress(address) {
   if (!address?.is_contract) return true;
   if (address.proxy_type?.toLowerCase() === 'eip7702') return true;
@@ -323,9 +342,11 @@ rpcBlockMs = cutoff > stopAt ? Math.max(50, Math.min(1_000, (Date.now() - rpcTim
 console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})`);
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
-const needsHolderBackfill = !previous || Number(previous.version || 1) < 7 || !previous.holderCutoffBlock;
+const needsHolderBackfill = !previous || Number(previous.version || 1) < 8 || !previous.netHolderCutoffBlock || !previous.wsNetHolderCutoffBlock;
 if (needsHolderBackfill) {
   state.holderCutoffBlock = CONFIG.deploymentBlock - 1;
+  state.netHolderCutoffBlock = CONFIG.deploymentBlock - 1;
+  state.wsNetHolderCutoffBlock = CONFIG.deploymentBlock - 1;
   state.netBalances = new Map();
   state.wsNetBalances = new Map();
 }
@@ -344,22 +365,24 @@ const winNetDraws = await rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1,
 const rpcWinNetDraws = [];
 applyLogs(state, [...staking, ...sNet]);
 applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
-const holderFromBlock = needsHolderBackfill ? CONFIG.deploymentBlock : state.holderCutoffBlock + 1;
-console.log(needsHolderBackfill ? `Backfilling holder ledgers from block ${holderFromBlock}` : `Updating holder ledgers after block ${state.holderCutoffBlock}`);
-const [netTransfers, wsNetTransfers] = await Promise.all([
-  rpcLogs(CONFIG.net, holderFromBlock, cutoff, { event: transferEvent, onProgress: progress }),
-  rpcLogs(WSNET_WRAPPER, holderFromBlock, cutoff, { event: transferEvent, onProgress: progress }),
-]);
-applyHolderTransferLogs(state.netBalances, netTransfers);
-applyHolderTransferLogs(state.wsNetBalances, wsNetTransfers);
-state.holderCutoffBlock = cutoff;
-state.version = 7;
+
+const netFromBlock = state.netHolderCutoffBlock + 1;
+const wsNetFromBlock = state.wsNetHolderCutoffBlock + 1;
+console.log(`Holder checkpoints: NET=${netFromBlock}->${cutoff} wsNET=${wsNetFromBlock}->${cutoff}`);
+const netProgress = await advanceHolderLedger(CONFIG.net, state.netBalances, netFromBlock, cutoff, progress);
+if (netProgress.throughBlock >= netFromBlock) state.netHolderCutoffBlock = netProgress.throughBlock;
+const wsNetProgress = await advanceHolderLedger(WSNET_WRAPPER, state.wsNetBalances, wsNetFromBlock, cutoff, progress);
+if (wsNetProgress.throughBlock >= wsNetFromBlock) state.wsNetHolderCutoffBlock = wsNetProgress.throughBlock;
+state.holderCutoffBlock = Math.min(state.netHolderCutoffBlock, state.wsNetHolderCutoffBlock);
+const holderBackfillComplete = state.netHolderCutoffBlock >= cutoff && state.wsNetHolderCutoffBlock >= cutoff;
+
+state.version = 8;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
 try {
-  const point = await collectMetrics(state, { classifyHolders: !needsWinNetBackfill });
+  const point = await collectMetrics(state, { classifyHolders: !needsWinNetBackfill && holderBackfillComplete });
   state.metricsHistory = [...(state.metricsHistory || []), point].filter((p) => Date.now() - new Date(p.timestamp).getTime() <= 8 * 24 * 60 * 60 * 1000);
 } catch (error) { console.warn(`Metrics checkpoint skipped: ${error.message}`); }
 await writeFile('public/snapshot.json', JSON.stringify(serialize(state)) + '\n');
-console.log(`Saved ${staking.length + sNet.length} staking, ${winNet.length + winNetDraws.length + rpcWinNetDraws.length} WinNET, and ${netTransfers.length + wsNetTransfers.length} holder-transfer logs at block ${cutoff}`);
+console.log(`Saved ${staking.length + sNet.length} staking, ${winNet.length + winNetDraws.length + rpcWinNetDraws.length} WinNET, and ${netProgress.logCount + wsNetProgress.logCount} holder-transfer logs; holder checkpoints NET=${state.netHolderCutoffBlock} wsNET=${state.wsNetHolderCutoffBlock} target=${cutoff}`);
