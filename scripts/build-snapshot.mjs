@@ -18,23 +18,42 @@ const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55
 
 async function fetchRpcCodes(addresses) {
   const codes = new Map();
-  for (let start = 0; start < addresses.length; start += 200) {
-    const batch = addresses.slice(start, start + 200);
-    let result = null;
-    for (let attempt = 0; attempt < 8 && !result; attempt += 1) {
+
+  async function classifyBatch(batch) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       try {
         const response = await fetch(CONFIG.rpc, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(batch.map((address, index) => ({ jsonrpc: '2.0', id: index, method: 'eth_getCode', params: [address, 'latest'] }))),
         });
-        if (response.ok) result = await response.json();
+        const result = response.ok ? await response.json() : null;
+        if (Array.isArray(result)) {
+          const byId = new Map(result.map((item) => [item.id, item]));
+          for (let index = 0; index < batch.length; index += 1) {
+            const item = byId.get(index);
+            codes.set(batch[index], item?.result || '0xunknown');
+          }
+          return;
+        }
       } catch {}
-      if (!result) await pause(Math.min(10_000, 1_000 * (attempt + 1)));
+      if (attempt < 3) await pause(500 * (attempt + 1));
     }
-    if (!Array.isArray(result)) throw new Error('Unable to classify holder bytecode through RPC');
-    for (const item of result) codes.set(batch[item.id], item.result || '0x');
-    await pause(150);
+
+    if (batch.length > 1) {
+      const middle = Math.ceil(batch.length / 2);
+      await classifyBatch(batch.slice(0, middle));
+      await classifyBatch(batch.slice(middle));
+      return;
+    }
+
+    console.warn(`Unable to classify holder bytecode: ${batch[0]}`);
+    codes.set(batch[0], '0xunknown');
+  }
+
+  for (let start = 0; start < addresses.length; start += 100) {
+    await classifyBatch(addresses.slice(start, start + 100));
+    await pause(75);
   }
   return codes;
 }
