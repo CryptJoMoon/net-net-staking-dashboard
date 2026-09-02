@@ -47,7 +47,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 7, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], holderCutoffBlock: CONFIG.deploymentBlock - 1, netBalances: {}, wsNetBalances: {}, metricsHistory: [] };
+  return { version: 8, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], holderCutoffBlock: CONFIG.deploymentBlock - 1, netHolderCutoffBlock: CONFIG.deploymentBlock - 1, wsNetHolderCutoffBlock: CONFIG.deploymentBlock - 1, netBalances: {}, wsNetBalances: {}, metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -64,6 +64,8 @@ export function hydrate(raw) {
     winNetCutoffBlock: state.winNetCutoffBlock || CONFIG.winNetDeploymentBlock - 1,
     winNetWallets: new Map(Object.entries(state.winNetWallets || {})), winNetSeen: new Set(state.winNetSeen || []), winNetActivity: state.winNetActivity || [],
     holderCutoffBlock: state.holderCutoffBlock || CONFIG.deploymentBlock - 1,
+    netHolderCutoffBlock: state.netHolderCutoffBlock || state.holderCutoffBlock || CONFIG.deploymentBlock - 1,
+    wsNetHolderCutoffBlock: state.wsNetHolderCutoffBlock || state.holderCutoffBlock || CONFIG.deploymentBlock - 1,
     netBalances: new Map(Object.entries(state.netBalances || {}).map(([k, v]) => [k, BigInt(v)])),
     wsNetBalances: new Map(Object.entries(state.wsNetBalances || {}).map(([k, v]) => [k, BigInt(v)])),
   };
@@ -76,7 +78,7 @@ export function serialize(state) {
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
     wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
-    seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), holderCutoffBlock: state.holderCutoffBlock, netBalances: Object.fromEntries([...(state.netBalances || [])].map(([address, balance]) => [address, balance.toString()])), wsNetBalances: Object.fromEntries([...(state.wsNetBalances || [])].map(([address, balance]) => [address, balance.toString()])), metricsHistory: (state.metricsHistory || []).slice(-1200),
+    seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), holderCutoffBlock: state.holderCutoffBlock, netHolderCutoffBlock: state.netHolderCutoffBlock, wsNetHolderCutoffBlock: state.wsNetHolderCutoffBlock, netBalances: Object.fromEntries([...(state.netBalances || [])].map(([address, balance]) => [address, balance.toString()])), wsNetBalances: Object.fromEntries([...(state.wsNetBalances || [])].map(([address, balance]) => [address, balance.toString()])), metricsHistory: (state.metricsHistory || []).slice(-1200),
   };
 }
 
