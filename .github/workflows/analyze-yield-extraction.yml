@@ -1,6 +1,11 @@
 name: Private yield extraction analysis
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/analyze-yield-extraction.mjs
+      - .github/workflows/analyze-yield-extraction.yml
   workflow_dispatch:
     inputs:
       days:
