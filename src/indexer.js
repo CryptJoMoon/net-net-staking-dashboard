@@ -47,7 +47,7 @@ const idOf = (log) => `${lower(log.address?.hash || log.address)}:${log.transact
 const cmp = (a, b) => a.block_number - b.block_number || a.index - b.index;
 
 export function emptyState() {
-  return { version: 8, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], holderCutoffBlock: CONFIG.deploymentBlock - 1, netHolderCutoffBlock: CONFIG.deploymentBlock - 1, wsNetHolderCutoffBlock: CONFIG.deploymentBlock - 1, netBalances: {}, wsNetBalances: {}, metricsHistory: [] };
+  return { version: 9, cutoffBlock: CONFIG.deploymentBlock - 1, winNetCutoffBlock: CONFIG.winNetDeploymentBlock - 1, indexedAt: null, totalSupply: INITIAL_SUPPLY.toString(), gpf: (TOTAL_GONS / INITIAL_SUPPLY).toString(), gons: {}, earned: {}, wallets: {}, activity: [], flowActivity: [], flowHistoryStart: null, seen: [], winNetWallets: {}, winNetActivity: [], winNetSeen: [], holderCutoffBlock: CONFIG.deploymentBlock - 1, netHolderCutoffBlock: CONFIG.deploymentBlock - 1, wsNetHolderCutoffBlock: CONFIG.deploymentBlock - 1, netBalances: {}, wsNetBalances: {}, metricsHistory: [] };
 }
 
 export function hydrate(raw) {
@@ -61,6 +61,8 @@ export function hydrate(raw) {
     })),
     earned: new Map(Object.entries(state.earned || {}).map(([k, v]) => [k, BigInt(v)])),
     wallets: new Map(Object.entries(state.wallets || {})), seen: new Set(state.seen || []),
+    flowActivity: state.flowActivity || (state.activity || []).filter((event) => event.type === 'Staked' || event.type === 'Unstaked'),
+    flowHistoryStart: state.flowHistoryStart || state.activity?.at(-1)?.timestamp || null,
     winNetCutoffBlock: state.winNetCutoffBlock || CONFIG.winNetDeploymentBlock - 1,
     winNetWallets: new Map(Object.entries(state.winNetWallets || {})), winNetSeen: new Set(state.winNetSeen || []), winNetActivity: state.winNetActivity || [],
     holderCutoffBlock: state.holderCutoffBlock || CONFIG.deploymentBlock - 1,
@@ -78,6 +80,7 @@ export function serialize(state) {
     gons: Object.fromEntries([...state.gons].map(([k, v]) => [k, v.toString()])),
     earned: Object.fromEntries([...state.earned].map(([k, v]) => [k, v.toString()])),
     wallets: Object.fromEntries(state.wallets), activity: state.activity.slice(0, 1500),
+    flowActivity: (state.flowActivity || []).filter((event) => !event.timestamp || Date.now() - new Date(event.timestamp).getTime() <= 72 * 60 * 60 * 1000).slice(0, 10000), flowHistoryStart: state.flowHistoryStart,
     seen: [...state.seen].slice(-5000), winNetWallets: Object.fromEntries(state.winNetWallets || []), winNetActivity: (state.winNetActivity || []).slice(0, 1500), winNetSeen: [...(state.winNetSeen || [])].slice(-5000), holderCutoffBlock: state.holderCutoffBlock, netHolderCutoffBlock: state.netHolderCutoffBlock, wsNetHolderCutoffBlock: state.wsNetHolderCutoffBlock, netBalances: Object.fromEntries([...(state.netBalances || [])].map(([address, balance]) => [address, balance.toString()])), wsNetBalances: Object.fromEntries([...(state.wsNetBalances || [])].map(([address, balance]) => [address, balance.toString()])), metricsHistory: (state.metricsHistory || []).slice(-1200),
   };
 }
@@ -126,10 +129,13 @@ export function applyLogs(state, logs) {
         const w = wallet(state, actor); const field = event === 'Staked' ? 'added' : 'removed';
         addBig(w, field, amount); w[event === 'Staked' ? 'stakes' : 'unstakes'] += 1; w.lastActive = log.block_timestamp;
       }
-      state.activity.unshift({ id, type: event, actor, recipient: event === 'Unstaked' ? valueOf(log, 'to') : null, amount: amount.toString(), epoch: valueOf(log, 'epoch') || null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
+      const activityEvent = { id, type: event, actor, recipient: event === 'Unstaked' ? valueOf(log, 'to') : null, amount: amount.toString(), epoch: valueOf(log, 'epoch') || null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash };
+      state.activity.unshift(activityEvent);
+      if (event === 'Staked' || event === 'Unstaked') state.flowActivity.unshift(activityEvent);
     }
   }
   state.activity = state.activity.sort((a, b) => b.block - a.block).slice(0, 1500);
+  state.flowActivity = [...new Map((state.flowActivity || []).map((event) => [event.id, event])).values()].sort((a, b) => b.block - a.block).filter((event) => !event.timestamp || Date.now() - new Date(event.timestamp).getTime() <= 72 * 60 * 60 * 1000).slice(0, 10000);
   return state;
 }
 
@@ -178,11 +184,13 @@ export function viewModel(state) {
   const totalStaked = stakers.reduce((n, w) => n + BigInt(w.balance), 0n);
   const totalRewards = stakers.reduce((n, w) => n + BigInt(w.rewards), 0n);
   const since = Date.now() - 24 * 60 * 60 * 1000;
-  const activity24h = state.activity.filter((a) => a.timestamp && new Date(a.timestamp).getTime() >= since);
+  const flowActivity = state.flowActivity || state.activity;
+  const activity24h = flowActivity.filter((a) => a.timestamp && new Date(a.timestamp).getTime() >= since);
   const adds24h = activity24h.filter((a) => a.type === 'Staked').reduce((n, a) => n + BigInt(a.amount), 0n);
   const removals24h = activity24h.filter((a) => a.type === 'Unstaked').reduce((n, a) => n + BigInt(a.amount), 0n);
   const winNetStakers = [...(state.winNetWallets || new Map()).values()].map((wallet) => ({ ...wallet, balance: wallet.principal, added: wallet.entered, removed: (BigInt(wallet.exited || 0) + BigInt(wallet.penalties || 0)).toString(), rewards: wallet.prizes, lotteryWins: wallet.wins || 0, stakes: wallet.entries, unstakes: wallet.exits, venue: 'WinNET' }));
-  return { stakers, winNetStakers, activity: state.activity, winNetActivity: state.winNetActivity || [], totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt };
+  const flowCoverageHours = state.flowHistoryStart ? Math.max(0, (Date.now() - new Date(state.flowHistoryStart).getTime()) / 3_600_000) : 0;
+  return { stakers, winNetStakers, activity: state.activity, flowActivity, flowCoverageHours, flowWindowComplete: flowCoverageHours >= 24, winNetActivity: state.winNetActivity || [], totalStaked: totalStaked.toString(), totalRewards: totalRewards.toString(), adds24h: adds24h.toString(), removals24h: removals24h.toString(), cutoffBlock: state.cutoffBlock, winNetCutoffBlock: state.winNetCutoffBlock, indexedAt: state.indexedAt };
 }
 
 async function request(url, attempts = 6) {
