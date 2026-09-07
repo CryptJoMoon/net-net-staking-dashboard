@@ -343,6 +343,7 @@ console.log(`Indexing blocks ${stopAt + 1} through ${cutoff} (head ${chainHead})
 const progress = ({ address, page, count }) => console.log(`${address.slice(0, 8)} page=${page} logs=${count}`);
 const needsWinNetBackfill = !previous || Number(previous.version || 1) < 6 || !previous.winNetCutoffBlock;
 const needsHolderBackfill = !previous || Number(previous.version || 1) < 8 || !previous.netHolderCutoffBlock || !previous.wsNetHolderCutoffBlock;
+const needsFlowBackfill = !previous || Number(previous.version || 1) < 9 || !previous.flowHistoryStart;
 if (needsHolderBackfill) {
   state.holderCutoffBlock = CONFIG.deploymentBlock - 1;
   state.netHolderCutoffBlock = CONFIG.deploymentBlock - 1;
@@ -365,6 +366,27 @@ const winNetDraws = await rpcLogs(CONFIG.winNetDrawController, winNetStopAt + 1,
 const rpcWinNetDraws = [];
 applyLogs(state, [...staking, ...sNet]);
 applyWinNetLogs(state, [...winNet, ...winNetDraws, ...rpcWinNetDraws]);
+if (needsFlowBackfill) {
+  try {
+    const lookbackBlocks = Math.ceil(36 * 60 * 60 * 1000 / Math.max(50, rpcBlockMs));
+    const flowFromBlock = Math.max(CONFIG.deploymentBlock, cutoff - lookbackBlocks);
+    console.log(`Backfilling direct staking flow from block ${flowFromBlock}`);
+    const historicalFlowLogs = await rpcLogs(CONFIG.staking, flowFromBlock, cutoff, { decodeMain: true, onProgress: progress });
+    const compactFlow = historicalFlowLogs.filter((log) => {
+      const type = log.decoded?.method_call?.split('(')[0];
+      return type === 'Staked' || type === 'Unstaked';
+    }).map((log) => {
+      const type = log.decoded.method_call.split('(')[0];
+      const get = (name) => log.decoded.parameters.find((parameter) => parameter.name === name)?.value;
+      return { id: `${log.address.toLowerCase()}:${log.transaction_hash}:${log.index}`, type, actor: type === 'Staked' ? get('to') : get('from'), recipient: type === 'Unstaked' ? get('to') : null, amount: get('amount') || '0', epoch: null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash };
+    });
+    state.flowActivity = [...new Map([...(state.flowActivity || []), ...compactFlow].map((event) => [event.id, event])).values()].sort((a, b) => b.block - a.block);
+    state.flowHistoryStart = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
+  } catch (error) {
+    console.warn(`Flow-history backfill paused: ${error?.shortMessage || error?.message}`);
+    state.flowHistoryStart ||= state.flowActivity?.at(-1)?.timestamp || null;
+  }
+}
 
 const netFromBlock = state.netHolderCutoffBlock + 1;
 const wsNetFromBlock = state.wsNetHolderCutoffBlock + 1;
@@ -376,7 +398,7 @@ if (wsNetProgress.throughBlock >= wsNetFromBlock) state.wsNetHolderCutoffBlock =
 state.holderCutoffBlock = Math.min(state.netHolderCutoffBlock, state.wsNetHolderCutoffBlock);
 const holderBackfillComplete = state.netHolderCutoffBlock >= cutoff && state.wsNetHolderCutoffBlock >= cutoff;
 
-state.version = 8;
+state.version = 9;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
