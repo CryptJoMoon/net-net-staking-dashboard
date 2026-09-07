@@ -279,6 +279,41 @@ export async function fetchRawHistoricalLogs(address, fromBlock, toBlock, onProg
   }));
 }
 
+
+export async function fetchWalletStakeHistory(address, onProgress) {
+  const walletAddress = lower(address);
+  if (!/^0x[a-f0-9]{40}$/.test(walletAddress)) throw new Error('Enter a valid 0x wallet address.');
+  const paddedWallet = `0x${walletAddress.slice(2).padStart(64, '0')}`;
+  async function fetchType(topic0, actorTopic) {
+    const collected = [], offset = 1000;
+    for (let page = 1; page <= 250; page += 1) {
+      const params = new URLSearchParams({
+        module: 'logs', action: 'getLogs', fromBlock: String(CONFIG.deploymentBlock), toBlock: 'latest',
+        address: CONFIG.staking, topic0, [`topic${actorTopic}`]: paddedWallet,
+        [`topic0_${actorTopic}_opr`]: 'and', page: String(page), offset: String(offset),
+      });
+      const json = await request(`${CONFIG.explorer}/api?${params}`);
+      if (json?.status === '0' && /no (?:logs|records)/i.test(json.message || json.result || '')) break;
+      if (!Array.isArray(json?.result)) throw new Error('The explorer could not return this wallet history. Please try again.');
+      collected.push(...json.result); onProgress?.({ page, count: collected.length });
+      if (json.result.length < offset) break;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    return collected;
+  }
+  const [stakes, unstakes] = await Promise.all([fetchType(TOPICS.staked, 2), fetchType(TOPICS.unstaked, 1)]);
+  const unique = new Map();
+  for (const raw of [...stakes, ...unstakes]) {
+    const log = normalizeLegacy(raw, CONFIG.staking);
+    if (!log) continue;
+    const type = eventOf(log), amount = valueOf(log, 'amount') || '0';
+    const from = valueOf(log, 'from'), to = valueOf(log, 'to');
+    const event = { id: `${log.transaction_hash}:${log.index}`, type, actor: type === 'Staked' ? to : from, recipient: type === 'Unstaked' ? to : null, amount, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash };
+    unique.set(event.id, event);
+  }
+  return [...unique.values()].sort((a, b) => b.block - a.block || b.id.localeCompare(a.id));
+}
+
 export async function latestBlock() {
   const body = await request(`${CONFIG.api}/blocks?type=block`);
   if (!body.items?.[0]?.height) throw new Error('Unable to read the current Robinhood Chain block.');
