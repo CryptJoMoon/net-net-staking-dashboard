@@ -1,0 +1,64 @@
+name: Private yield extraction analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Days to analyze (limited by retained snapshot activity)
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "7"
+          - "14"
+          - "30"
+          - "60"
+          - "90"
+      epoch_rate:
+        description: Fallback epoch rate if live contract read fails
+        required: true
+        default: "0.0045"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-yield-extraction
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Analyze recurring staking removals
+        env:
+          DAYS: ${{ inputs.days }}
+          EPOCH_RATE: ${{ inputs.epoch_rate }}
+        run: node scripts/analyze-yield-extraction.mjs
+
+      - name: Add summary
+        if: always()
+        run: |
+          if [ -f yield-extraction-report/report.md ]; then
+            cat yield-extraction-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload private report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: net-yield-extraction-${{ github.run_number }}
+          path: yield-extraction-report/
+          retention-days: 30
+          if-no-files-found: error
