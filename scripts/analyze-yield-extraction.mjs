@@ -58,11 +58,14 @@ const coverageLimited = retainedStart > requestedStart;
 const activity = datedActivity.filter((event) => new Date(event.timestamp) >= start && new Date(event.timestamp) <= end);
 const rebases = activity.filter((event) => event.type === 'Rebased').map((event) => new Date(event.timestamp).getTime());
 const stakers = new Map(vm.stakers.map((row) => [row.address.toLowerCase(), row]));
+const verifiedHolderPoint = [...(snapshot.metricsHistory || [])].reverse().find((point) => Array.isArray(point.excludedHolderAddresses));
+const excludedAddresses = new Set((verifiedHolderPoint?.excludedHolderAddresses || []).map((address) => address.toLowerCase()));
 const byWallet = new Map();
 
 for (const event of activity) {
   if (!event.actor || !['Staked', 'Unstaked'].includes(event.type)) continue;
   const address = event.actor.toLowerCase();
+  if (excludedAddresses.has(address)) continue;
   if (!byWallet.has(address)) byWallet.set(address, { address: event.actor, adds: [], removals: [] });
   byWallet.get(address)[event.type === 'Staked' ? 'adds' : 'removals'].push(event);
 }
@@ -217,6 +220,7 @@ const summary = {
   price: inputs.price,
   priceSource: inputs.priceSource,
   activityEvents: activity.length,
+  excludedProtocolAddresses: excludedAddresses.size,
   withdrawalWallets: rows.length,
   whaleRemovers: whales.length,
   harvestingCandidates: harvesting.length,
