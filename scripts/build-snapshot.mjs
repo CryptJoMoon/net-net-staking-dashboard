@@ -8,8 +8,37 @@ const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'v
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const transferEvent = { type: 'event', name: 'Transfer', inputs: [{ name: 'from', type: 'address', indexed: true }, { name: 'to', type: 'address', indexed: true }, { name: 'value', type: 'uint256', indexed: false }] };
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
-const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
-const DISCLOSED_SLEEVE_USD = 863_750;
+const SLEEVE = {
+  usdg: '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168',
+  nnUsdg: '0x99347d5F70D3838763f6Bddcf80304C8aa953B57',
+  morpho: '0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010',
+  positionManager: '0x73991a25c818bf1f1128deaab1492d45638de0d3',
+  turboDesk: '0x757122439420900ca44A80c390d586011FD72C8a',
+};
+const sleeveAssets = [
+  { symbol: 'NVDA', token: '0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', marketId: '0x8b16891f032a93b771347c9cb470a780e6699dd701553d3402aa3cdba6189c3e' },
+  { symbol: 'SPCX', token: '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', marketId: '0x9b4b47cdf7e295341c6c6cdfd3efb9805c4a5b3d580dba0c0c39d3a4232b297b' },
+  { symbol: 'AAPL', token: '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', marketId: '0xdeb4782d012d5fd3b24962538c2f6559049d70bda4dabd2e4212dacb96c28d45' },
+  { symbol: 'GOOGL', token: '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', marketId: '0x7fa81b10e5d21b2e4c571f862442bc11aff2ed14f02335868d0ff933fd40d0ba' },
+  { symbol: 'MSFT', token: '0xe93237c50d904957cf27e7b1133b510c669c2e74', marketId: '0x2e1859aa8f143b7220088f80562c6dfe0bf8e52b87d9cedf8da8805f231994ce' },
+  { symbol: 'COIN', token: '0x6330d8c3178a418788df01a47479c0ce7ccf450b', marketId: '0x3ebd43d91c3960a9fac32bedd5c60428e0e414de5bdd67fda770207afb0eb615' },
+];
+const sleeveTokens = new Set([...sleeveAssets.map((asset) => asset.token.toLowerCase()), SLEEVE.usdg.toLowerCase(), SLEEVE.nnUsdg.toLowerCase()]);
+const sleeveLpPositions = [
+  { tokenId: 1_136_772n, pool: '0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3' },
+  { tokenId: 1_136_773n, pool: '0xc61284332117c3FB23A2A56cceFFD07F7aF60029' },
+  { tokenId: 1_136_774n, pool: '0xAae0d815EE56e4092a5E5C2911E676Fea50B2d6D' },
+  { tokenId: 1_136_775n, pool: '0x34d0dc122cf9a8eb296fc5e0d3a233625d7d19b7' },
+];
+const DISCLOSED_SLEEVE_USD = 4_028_047.78;
+const morphoAbi = [
+  { type: 'function', name: 'position', stateMutability: 'view', inputs: [{ type: 'bytes32' }, { type: 'address' }], outputs: [{ type: 'tuple', components: [{ name: 'supplyShares', type: 'uint256' }, { name: 'borrowShares', type: 'uint128' }, { name: 'collateral', type: 'uint128' }] }] },
+  { type: 'function', name: 'market', stateMutability: 'view', inputs: [{ type: 'bytes32' }], outputs: [{ type: 'tuple', components: [{ name: 'totalSupplyAssets', type: 'uint128' }, { name: 'totalSupplyShares', type: 'uint128' }, { name: 'totalBorrowAssets', type: 'uint128' }, { name: 'totalBorrowShares', type: 'uint128' }, { name: 'lastUpdate', type: 'uint128' }, { name: 'fee', type: 'uint128' }] }] },
+];
+const positionManagerAbi = [{ type: 'function', name: 'positions', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [
+  { name: 'nonce', type: 'uint96' }, { name: 'operator', type: 'address' }, { name: 'token0', type: 'address' }, { name: 'token1', type: 'address' }, { name: 'fee', type: 'uint24' }, { name: 'tickLower', type: 'int24' }, { name: 'tickUpper', type: 'int24' }, { name: 'liquidity', type: 'uint128' }, { name: 'feeGrowthInside0LastX128', type: 'uint256' }, { name: 'feeGrowthInside1LastX128', type: 'uint256' }, { name: 'tokensOwed0', type: 'uint128' }, { name: 'tokensOwed1', type: 'uint128' },
+] }];
+const v3PoolAbi = [{ type: 'function', name: 'slot0', stateMutability: 'view', inputs: [], outputs: [{ name: 'sqrtPriceX96', type: 'uint160' }, { name: 'tick', type: 'int24' }, { name: 'observationIndex', type: 'uint16' }, { name: 'observationCardinality', type: 'uint16' }, { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'feeProtocol', type: 'uint8' }, { name: 'unlocked', type: 'bool' }] }];
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
@@ -167,15 +196,93 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event 
   }).filter(Boolean);
 }
 
-function sleeveValue(balances) {
+async function fetchTokenMeta(token) {
+  const response = await fetch(`${CONFIG.api}/tokens/${token}`, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new Error(`Unable to value sleeve token ${token}: HTTP ${response.status}`);
+  const item = await response.json();
+  const decimals = Number(item.decimals), price = Number(item.exchange_rate);
+  if (!Number.isFinite(decimals) || !Number.isFinite(price) || price <= 0) throw new Error(`Missing sleeve mark for ${item.symbol || token}`);
+  return { decimals, price };
+}
+
+function sleeveWalletValue(balances) {
   if (!Array.isArray(balances)) return null;
-  const valuedBalances = balances.filter((item) => {
-    const value = Number(item.value), decimals = Number(item.token?.decimals), exchangeRate = Number(item.token?.exchange_rate);
-    return sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && Number.isFinite(value) && Number.isFinite(decimals) && Number.isFinite(exchangeRate) && exchangeRate > 0;
-  });
-  if (!valuedBalances.length) return null;
-  const total = valuedBalances.reduce((sum, item) => sum + Number(item.value) / 10 ** Number(item.token.decimals) * Number(item.token.exchange_rate), 0);
-  return validSleeveMark(total) ? total : null;
+  let matched = 0;
+  const total = balances.reduce((sum, item) => {
+    if (!sleeveTokens.has(item.token?.address_hash?.toLowerCase())) return sum;
+    const value = Number(item.value), decimals = Number(item.token?.decimals), price = Number(item.token?.exchange_rate);
+    if (!Number.isFinite(value) || !Number.isFinite(decimals) || !Number.isFinite(price) || price <= 0) return sum;
+    matched += 1;
+    return sum + value / 10 ** decimals * price;
+  }, 0);
+  return matched ? total : null;
+}
+
+async function fetchTokenBalances(address) {
+  const response = await fetch(`${CONFIG.api}/addresses/${address}/token-balances`, { headers: { accept: 'application/json' } });
+  if (!response.ok) throw new Error(`Unable to read token balances for ${address}: HTTP ${response.status}`);
+  return response.json();
+}
+
+const sharesToAssetsUp = (shares, assets, totalShares) => totalShares > 0n ? (shares * assets + totalShares - 1n) / totalShares : 0n;
+
+async function creditSleeveValue(marks) {
+  let collateralUsd = 0, debtRaw = 0n;
+  for (const asset of sleeveAssets) {
+    const [position, market] = await Promise.all([
+      client.readContract({ address: SLEEVE.morpho, abi: morphoAbi, functionName: 'position', args: [asset.marketId, CONFIG.managerSleeve] }),
+      client.readContract({ address: SLEEVE.morpho, abi: morphoAbi, functionName: 'market', args: [asset.marketId] }),
+    ]);
+    const mark = marks.get(asset.token.toLowerCase());
+    if (!mark) throw new Error(`Missing Credit mark for ${asset.symbol}`);
+    collateralUsd += Number(position.collateral) / 10 ** mark.decimals * mark.price;
+    debtRaw += sharesToAssetsUp(position.borrowShares, market.totalBorrowAssets, market.totalBorrowShares);
+  }
+  return { collateralUsd, debtUsd: Number(debtRaw) / 1e6, netUsd: collateralUsd - Number(debtRaw) / 1e6 };
+}
+
+function v3Amounts(liquidityRaw, sqrtPriceX96Raw, tickLower, tickUpper) {
+  const liquidity = Number(liquidityRaw);
+  const sqrtPrice = Number(sqrtPriceX96Raw) / 2 ** 96;
+  const sqrtLower = 1.0001 ** (Number(tickLower) / 2);
+  const sqrtUpper = 1.0001 ** (Number(tickUpper) / 2);
+  if (sqrtPrice <= sqrtLower) return [liquidity * (sqrtUpper - sqrtLower) / (sqrtLower * sqrtUpper), 0];
+  if (sqrtPrice >= sqrtUpper) return [0, liquidity * (sqrtUpper - sqrtLower)];
+  return [
+    liquidity * (sqrtUpper - sqrtPrice) / (sqrtPrice * sqrtUpper),
+    liquidity * (sqrtPrice - sqrtLower),
+  ];
+}
+
+async function lpSleeveValue(marks) {
+  let total = 0;
+  for (const entry of sleeveLpPositions) {
+    const [position, slot0] = await Promise.all([
+      client.readContract({ address: SLEEVE.positionManager, abi: positionManagerAbi, functionName: 'positions', args: [entry.tokenId] }),
+      client.readContract({ address: entry.pool, abi: v3PoolAbi, functionName: 'slot0' }),
+    ]);
+    const [amount0, amount1] = v3Amounts(position[7], slot0[0], position[5], position[6]);
+    const token0 = position[2].toLowerCase(), token1 = position[3].toLowerCase();
+    const mark0 = marks.get(token0), mark1 = marks.get(token1);
+    if (!mark0 || !mark1) throw new Error(`Missing LP mark for position ${entry.tokenId}`);
+    total += (amount0 + Number(position[10])) / 10 ** mark0.decimals * mark0.price;
+    total += (amount1 + Number(position[11])) / 10 ** mark1.decimals * mark1.price;
+  }
+  return total;
+}
+
+async function fullSleeveValue(safeBalances, turboBalances) {
+  const tokens = new Set([...sleeveTokens]);
+  const marks = new Map();
+  await Promise.all([...tokens].map(async (token) => marks.set(token, await fetchTokenMeta(token))));
+  const directUsd = sleeveWalletValue(safeBalances);
+  const turboUsd = sleeveWalletValue(turboBalances);
+  if (!validSleeveMark(directUsd) || !validSleeveMark(turboUsd)) throw new Error('Incomplete direct or TURBO sleeve balances');
+  const [credit, liquidityUsd] = await Promise.all([creditSleeveValue(marks), lpSleeveValue(marks)]);
+  const total = directUsd + credit.netUsd + liquidityUsd + turboUsd;
+  if (!validSleeveMark(total)) throw new Error('Incomplete full RWA sleeve valuation');
+  console.log(`RWA sleeve: direct=${directUsd.toFixed(2)} credit=${credit.netUsd.toFixed(2)} LP=${liquidityUsd.toFixed(2)} TURBO=${turboUsd.toFixed(2)} total=${total.toFixed(2)}`);
+  return total;
 }
 
 async function fetchRpcWinNetDraws(fromBlock, toBlock) {
@@ -270,9 +377,15 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
     client.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
     client.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
     Promise.all(excluded.map((address) => client.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
-    fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`).then((r) => r.ok ? r.json() : null).catch(() => null),
+    Promise.all([fetchTokenBalances(CONFIG.managerSleeve), fetchTokenBalances(SLEEVE.turboDesk)]).catch(() => [null, null]),
   ]);
-  const liveSleeveUsd = sleeveValue(sleeve);
+  const [safeSleeveBalances, turboSleeveBalances] = sleeve || [];
+  const liveSleeveUsd = safeSleeveBalances && turboSleeveBalances
+    ? await fullSleeveValue(safeSleeveBalances, turboSleeveBalances).catch((error) => {
+      console.warn(`Full RWA sleeve valuation unavailable: ${error.message}`);
+      return null;
+    })
+    : null;
   const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd))?.rwaSleeveUsd;
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
