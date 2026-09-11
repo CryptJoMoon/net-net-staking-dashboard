@@ -18,17 +18,14 @@ const distributorAbi = [{ type: 'function', name: 'currentRateWad', stateMutabil
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
-const sleeveTokens = new Set(['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0x6330d8c3178a418788df01a47479c0ce7ccf450b']);
-const DISCLOSED_SLEEVE_USD = 863_750;
+const DISCLOSED_SLEEVE_USD = 4_028_047.78;
 const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const WINNET_DRAW_CONTROLLER = '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70';
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
-const SLEEVE_CACHE_KEY = 'netnet-rwa-sleeve-v1';
 const MOON_BAG_KEY = 'netnet-moon-math-bag-v1';
 const MOON_TARGETS_KEY = 'netnet-moon-math-market-targets-v1';
-const SLEEVE_CACHE_MAX_AGE = 48 * 60 * 60 * 1000;
 let snapshotSleeveFallback = null;
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,36 +38,9 @@ async function fetchRpcWinNetDraws(fromBlock, toBlock) {
   }
   return logs.map((log) => ({ address: log.address, block_number: Number(log.blockNumber), block_timestamp: timestamps.get(log.blockNumber.toString()), data: log.data, index: Number(log.logIndex), topics: log.topics, transaction_hash: log.transactionHash }));
 }
-async function fetchSleeveBalances() {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    try {
-      const response = await fetch(`${CONFIG.api}/addresses/${CONFIG.managerSleeve}/token-balances`, { cache: 'no-store', headers: { accept: 'application/json' } });
-      if (response.ok) {
-        const balances = await response.json();
-        if (Array.isArray(balances)) return balances;
-      }
-    } catch { /* retry transient explorer errors */ }
-    if (attempt < 3) await pause(600 * (attempt + 1));
-  }
-  return null;
-}
-function sleeveValue(balances) {
-  const valuedBalances = balances.filter((item) => {
-    const value = Number(item.value), decimals = Number(item.token?.decimals), exchangeRate = Number(item.token?.exchange_rate);
-    return sleeveTokens.has(item.token?.address_hash?.toLowerCase()) && Number.isFinite(value) && Number.isFinite(decimals) && Number.isFinite(exchangeRate) && exchangeRate > 0;
-  });
-  if (!valuedBalances.length) return null;
-  const total = valuedBalances.reduce((sum, item) => sum + Number(item.value) / (10 ** Number(item.token.decimals)) * Number(item.token.exchange_rate), 0);
-  return Number.isFinite(total) && total > 0 ? total : null;
-}
-const validSleeveMark = (value) => Number.isFinite(value) && value > 0;
+const validSleeveMark = (value) => Number.isFinite(value) && value >= 1_000_000;
 function cachedSleeveValue() {
-  const candidates = [snapshotSleeveFallback];
-  try { candidates.push(JSON.parse(localStorage.getItem(SLEEVE_CACHE_KEY))); } catch { /* unavailable or malformed cache */ }
-  return candidates.filter((item) => validSleeveMark(item?.value) && Date.now() - new Date(item.timestamp).getTime() <= SLEEVE_CACHE_MAX_AGE).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0]?.value ?? DISCLOSED_SLEEVE_USD;
-}
-function rememberSleeveValue(value) {
-  try { localStorage.setItem(SLEEVE_CACHE_KEY, JSON.stringify({ value, timestamp: new Date().toISOString() })); } catch { /* storage can be disabled */ }
+  return validSleeveMark(snapshotSleeveFallback?.value) ? snapshotSleeveFallback.value : DISCLOSED_SLEEVE_USD;
 }
 function amount(raw, max = 4) {
   const signed = BigInt(raw || 0), negative = signed < 0n, value = negative ? -signed : signed;
@@ -159,7 +129,7 @@ function App() {
       let snapshot;
       try { const r = await fetch(`/snapshot.json?t=${Date.now()}`); if (!r.ok) throw new Error(); snapshot = await r.json(); }
       catch { snapshot = emptyState(); }
-      const lastSleevePoint = [...(snapshot.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd));
+      const lastSleevePoint = [...(snapshot.metricsHistory || [])].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).find((point) => validSleeveMark(point.rwaSleeveUsd));
       snapshotSleeveFallback = lastSleevePoint ? { value: lastSleevePoint.rwaSleeveUsd, timestamp: lastSleevePoint.timestamp } : null;
       if (!alive) return; const base = hydrate(snapshot); setState({ ...base }); await refresh(base);
       timer = setInterval(() => refresh(base, true), 15000);
@@ -172,7 +142,7 @@ function App() {
       try {
         const names = ['rfv', 'liquidUsdg', 'morphoAssets', 'polRfv', 'backingPerToken'];
         const excluded = [CONFIG.genesisBond, CONFIG.staking, CONFIG.taxCollector, CONFIG.bondDepository, CONFIG.rwaDesk, CONFIG.packDesk];
-        const [values, totalSupply, totalStaked, epochState, distributorAddress, priceWad, excludedBalances, sleeveResponse, playingTonight] = await Promise.all([
+        const [values, totalSupply, totalStaked, epochState, distributorAddress, priceWad, excludedBalances, playingTonight] = await Promise.all([
           Promise.all(names.map((functionName) => publicClient.readContract({ address: CONFIG.treasury, abi: treasuryAbi, functionName }))),
           publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'totalSupply' }),
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
@@ -180,13 +150,10 @@ function App() {
           publicClient.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'distributor' }).catch(() => null),
           publicClient.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
           Promise.all(excluded.map((address) => publicClient.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
-          fetchSleeveBalances(),
           publicClient.readContract({ address: WINNET_DRAW_CONTROLLER, abi: drawControllerAbi, functionName: 'treeSize' }).catch(() => null),
         ]);
         const treasury = Object.fromEntries(names.map((name, i) => [name, values[i].toString()]));
-        const liveSleeveValue = Array.isArray(sleeveResponse) ? sleeveValue(sleeveResponse) : null;
-        if (liveSleeveValue != null) rememberSleeveValue(liveSleeveValue);
-        const rwaSleeveUsd = liveSleeveValue ?? cachedSleeveValue();
+        const rwaSleeveUsd = cachedSleeveValue();
         const supplyNet = Number(totalSupply) / 1e9, stakedNet = Number(totalStaked) / 1e9, price = Number(priceWad) / 1e18;
         const queuedReward = epochState == null ? null : Number(epochState[3]) / 1e9;
         const currentRateWad = distributorAddress ? await publicClient.readContract({ address: distributorAddress, abi: distributorAbi, functionName: 'currentRateWad' }).catch(() => null) : null;
@@ -196,7 +163,7 @@ function App() {
         const excludedNet = excludedBalances.reduce((sum, value) => sum + Number(value) / 1e9, 0);
         const circulatingNet = Math.max(0, supplyNet - excludedNet);
         const onchainRfv = Number(values[0]) / 1e18;
-        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: liveSleeveValue == null && rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, queuedReward, epochRate, dailyRate, playingTonight: playingTonight == null ? null : Number(playingTonight), circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
+        if (alive) setFund({ treasury, rwaSleeveUsd, rwaSleeveCached: rwaSleeveUsd != null, trueRfvUsd: rwaSleeveUsd == null ? null : onchainRfv + rwaSleeveUsd, supplyNet, stakedNet, stakedPct: supplyNet > 0 ? stakedNet / supplyNet * 100 : 0, circulatingNet, price, queuedReward, epochRate, dailyRate, playingTonight: playingTonight == null ? null : Number(playingTonight), circulatingMarketCap: price > 0 ? circulatingNet * price : null, fdv: price > 0 ? supplyNet * price : null });
       } catch { if (alive) setFund(null); }
     };
     loadFund(); const timer = setInterval(loadFund, 60_000);
