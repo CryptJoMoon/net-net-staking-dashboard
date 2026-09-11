@@ -221,9 +221,28 @@ function sleeveWalletValue(balances) {
 }
 
 async function fetchTokenBalances(address) {
-  const response = await fetch(`${CONFIG.api}/addresses/${address}/token-balances`, { headers: { accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Unable to read token balances for ${address}: HTTP ${response.status}`);
-  return response.json();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(`${CONFIG.api}/addresses/${address}/token-balances`, { headers: { accept: 'application/json' } });
+      if (response.ok) return await response.json();
+      console.warn(`Sleeve balance API retry: address=${address.slice(0, 8)} status=${response.status} attempt=${attempt + 1}`);
+    } catch (error) {
+      console.warn(`Sleeve balance API retry: address=${address.slice(0, 8)} error=${error.message} attempt=${attempt + 1}`);
+    }
+    if (attempt < 3) await pause(750 * (attempt + 1));
+  }
+
+  console.warn(`Using direct RPC balances for sleeve address ${address}`);
+  return Promise.all([...sleeveTokens].map(async (token) => {
+    const [value, meta] = await Promise.all([
+      client.readContract({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
+      fetchTokenMeta(token),
+    ]);
+    return {
+      value: value.toString(),
+      token: { address_hash: token, decimals: String(meta.decimals), exchange_rate: String(meta.price) },
+    };
+  }));
 }
 
 const sharesToAssetsUp = (shares, assets, totalShares) => totalShares > 0n ? (shares * assets + totalShares - 1n) / totalShares : 0n;
@@ -379,7 +398,10 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
     client.readContract({ address: CONFIG.staking, abi: stakingAbi, functionName: 'totalStaked' }),
     client.readContract({ address: CONFIG.pairOracle, abi: oracleAbi, functionName: 'twapNetUsdg' }).catch(() => 0n),
     Promise.all(excluded.map((address) => client.readContract({ address: CONFIG.net, abi: erc20Abi, functionName: 'balanceOf', args: [address] }))),
-    Promise.all([fetchTokenBalances(CONFIG.managerSleeve), fetchTokenBalances(SLEEVE.turboDesk)]).catch(() => [null, null]),
+    Promise.all([fetchTokenBalances(CONFIG.managerSleeve), fetchTokenBalances(SLEEVE.turboDesk)]).catch((error) => {
+      console.warn(`Sleeve balance reads unavailable: ${error.message}`);
+      return [null, null];
+    }),
   ]);
   const [safeSleeveBalances, turboSleeveBalances] = sleeve || [];
   const liveSleeveUsd = safeSleeveBalances && turboSleeveBalances
