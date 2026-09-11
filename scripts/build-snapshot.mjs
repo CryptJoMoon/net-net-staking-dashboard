@@ -43,6 +43,8 @@ const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const holderChunkBudget = Math.max(0, Number.parseInt(process.env.HOLDER_CHUNKS || '10', 10) || 0);
+const holderChunkSize = Math.max(1_000, Number.parseInt(process.env.HOLDER_CHUNK_BLOCKS || '5000', 10) || 5_000);
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
 
 async function fetchRpcCodes(addresses) {
@@ -308,10 +310,10 @@ function applyHolderTransferLogs(balances, logs) {
   }
 }
 
-async function advanceHolderLedger(address, balances, fromBlock, targetBlock, onProgress, maxChunks = 12) {
+async function advanceHolderLedger(address, balances, fromBlock, targetBlock, onProgress, maxChunks = holderChunkBudget) {
   let cursor = fromBlock, throughBlock = fromBlock - 1, logCount = 0;
   for (let chunk = 0; chunk < maxChunks && cursor <= targetBlock; chunk += 1) {
-    const end = Math.min(targetBlock, cursor + 200_000 - 1);
+    const end = Math.min(targetBlock, cursor + holderChunkSize - 1);
     try {
       const logs = await rpcLogs(address, cursor, end, { event: transferEvent, onProgress });
       applyHolderTransferLogs(balances, logs);
