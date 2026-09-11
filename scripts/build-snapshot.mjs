@@ -386,7 +386,8 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
       return null;
     })
     : null;
-  const previousSleeveUsd = [...(state.metricsHistory || [])].reverse().find((point) => validSleeveMark(point.rwaSleeveUsd))?.rwaSleeveUsd;
+  const previousSleeveUsd = [...(state.metricsHistory || [])].reverse()
+    .find((point) => Number(point.rwaSleeveUsd) >= 1_000_000)?.rwaSleeveUsd;
   const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
   const vm = viewModel(state);
