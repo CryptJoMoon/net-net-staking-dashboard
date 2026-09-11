@@ -3,7 +3,7 @@ import { createPublicClient, http } from 'viem';
 import { CONFIG, applyLogs, applyWinNetLogs, emptyState, hydrate, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
-const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }];
+const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] }];
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const transferEvent = { type: 'event', name: 'Transfer', inputs: [{ name: 'from', type: 'address', indexed: true }, { name: 'to', type: 'address', indexed: true }, { name: 'value', type: 'uint256', indexed: false }] };
@@ -24,6 +24,19 @@ const sleeveAssets = [
   { symbol: 'COIN', token: '0x6330d8c3178a418788df01a47479c0ce7ccf450b', marketId: '0x3ebd43d91c3960a9fac32bedd5c60428e0e414de5bdd67fda770207afb0eb615' },
 ];
 const sleeveTokens = new Set([...sleeveAssets.map((asset) => asset.token.toLowerCase()), SLEEVE.usdg.toLowerCase(), SLEEVE.nnUsdg.toLowerCase()]);
+const sleeveFeeds = new Map([
+  ['0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec', '0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15'],
+  ['0x4a0e65a3eccec6dbe60ae065f2e7bb85fae35eea', '0xB265810950ba6c5C0Ff821c9963014a56fD8Bffb'],
+  ['0xaf3d76f1834a1d425780943c99ea8a608f8a93f9', '0x6B22A786bAa607d76728168703a39Ea9C99f2cD0'],
+  ['0x2e0847e8910a9732eb3fb1bb4b70a580adad4fe3', '0xF6f373a037c30F0e5010d854385cA89185AE638b'],
+  ['0xe93237c50d904957cf27e7b1133b510c669c2e74', '0x45C3C877C15E6BA2EBB19eA114Ea508d14C1Af2E'],
+  ['0x6330d8c3178a418788df01a47479c0ce7ccf450b', '0xA3a468A452940B7D6b69991207B508c609a98Ef2'],
+]);
+const chainlinkAbi = [
+  { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+  { type: 'function', name: 'latestRoundData', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint80' }, { type: 'int256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint80' }] },
+];
+const vault4626Abi = [{ type: 'function', name: 'convertToAssets', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
 const sleeveLpPositions = [
   { tokenId: 1_136_772n, pool: '0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3' },
   { tokenId: 1_136_773n, pool: '0xc61284332117c3FB23A2A56cceFFD07F7aF60029' },
@@ -199,11 +212,32 @@ async function rpcLogs(address, fromBlock, toBlock, { decodeMain = false, event 
 }
 
 async function fetchTokenMeta(token) {
-  const response = await fetch(`${CONFIG.api}/tokens/${token}`, { headers: { accept: 'application/json' } });
-  if (!response.ok) throw new Error(`Unable to value sleeve token ${token}: HTTP ${response.status}`);
-  const item = await response.json();
-  const decimals = Number(item.decimals), price = Number(item.exchange_rate);
-  if (!Number.isFinite(decimals) || !Number.isFinite(price) || price <= 0) throw new Error(`Missing sleeve mark for ${item.symbol || token}`);
+  const key = token.toLowerCase();
+  try {
+    const response = await fetch(`${CONFIG.api}/tokens/${token}`, { headers: { accept: 'application/json' } });
+    if (response.ok) {
+      const item = await response.json();
+      const decimals = Number(item.decimals), price = Number(item.exchange_rate);
+      if (Number.isFinite(decimals) && Number.isFinite(price) && price > 0) return { decimals, price };
+    }
+  } catch {}
+
+  const decimals = Number(await client.readContract({ address: token, abi: erc20Abi, functionName: 'decimals' }));
+  if (key === SLEEVE.usdg.toLowerCase()) return { decimals, price: 1 };
+  if (key === SLEEVE.nnUsdg.toLowerCase()) {
+    const oneShare = 10n ** BigInt(decimals);
+    const assets = await client.readContract({ address: token, abi: vault4626Abi, functionName: 'convertToAssets', args: [oneShare] });
+    return { decimals, price: Number(assets) / 1e6 };
+  }
+
+  const feed = sleeveFeeds.get(key);
+  if (!feed) throw new Error(`No trusted sleeve price feed for ${token}`);
+  const [feedDecimals, round] = await Promise.all([
+    client.readContract({ address: feed, abi: chainlinkAbi, functionName: 'decimals' }),
+    client.readContract({ address: feed, abi: chainlinkAbi, functionName: 'latestRoundData' }),
+  ]);
+  const price = Number(round[1]) / 10 ** Number(feedDecimals);
+  if (!Number.isFinite(price) || price <= 0) throw new Error(`Invalid trusted sleeve mark for ${token}`);
   return { decimals, price };
 }
 
