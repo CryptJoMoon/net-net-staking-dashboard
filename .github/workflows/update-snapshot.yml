@@ -28,6 +28,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Build snapshot with retries
+        env:
+          HOLDER_CHUNKS: ${{ github.event_name == 'push' && '0' || '10' }}
+          HOLDER_CHUNK_BLOCKS: '5000'
         run: |
           for attempt in 1 2 3; do
             if npm run snapshot; then exit 0; fi
