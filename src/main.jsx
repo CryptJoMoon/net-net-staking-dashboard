@@ -19,12 +19,29 @@ const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'vi
 const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const DISCLOSED_SLEEVE_USD = 4_980_671.98;
-const MORPHO_PROTOCOL = '0x9d53d5e3bd5e8d4cbfa6db1ca238aea02e651010';
+const NETNET_PRODUCT_INFRA = [
+  '0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010', // Morpho
+  '0x3Bb7A23316f82C0e984fA2E784846d8928a35f42', // team multisig / protocol Safe
+  '0xA1ee052EC32532304a7522bd9A4b594eC28fF1b1', // wsNET zap
+  '0x4638617808e3f1Cf237c0d33Ae818126D5C77E17', // TurboRouter
+  '0x21089CFCDbf47902A2F3950200cE9ea66bF79ee4', // ClimbDesk
+  '0x757122439420900ca44A80c390d586011FD72C8a', // TURBO desk
+  '0x7EF9528408D99f98056922291048F0710001e015', // Predict desk
+  '0xb488368902b1CbD7533F1536C3F860065398D3e9', // Predict House Vault
+  '0x3174dE69a84c53F82F6B6Dca5C64E705cFFe8Dd6', // THE BOOK desk
+  '0xC866E4f53f1439d85171a06395ce37b887D16Fa1', // THE BOOK zap
+  '0xDe9df88ABA59b644D4d7f6305e52aB982A3cFCac', // NET ADVANCE desk
+  '0x04E2F5707A4421c7aFc7b56c14bc190550aC594D', // NET ADVANCE zap
+  '0x2F2F215b810Fa692304cB0095804Ab3C8e4cEf78', // Asset Bond desk
+  '0x3B4C1617C76c72D41Ff43B625BC5DbBF3A32D986', // Asset Bond zap
+  '0x8366a39CC670B4001A1121B8F6A443A643e40951', // Uniswap v4 PoolManager
+  '0x58daec3116aae6D93017bAAea7749052E8a04fA7', // Uniswap v4 PositionManager
+];
 const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const WINNET_DRAW_CONTROLLER = '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70';
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
-const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, MORPHO_PROTOCOL, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
+const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, ...NETNET_PRODUCT_INFRA, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const MOON_BAG_KEY = 'netnet-moon-math-bag-v1';
 const MOON_TARGETS_KEY = 'netnet-moon-math-market-targets-v1';
 let snapshotSleeveFallback = null;
