@@ -178,7 +178,11 @@ function App() {
   const verifiedHolderPoints = useMemo(() => {
     const points = [...(state?.metricsHistory || [])].filter((point) => Number.isFinite(point.trueHolderCount)).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     const explicitlyVerified = points.filter((point) => point.holderMetricsFresh === true);
-    return explicitlyVerified.length ? explicitlyVerified : points.filter((point) => point.holderMetricsFresh !== false);
+    const implicitlyVerified = points.filter((point) => point.holderMetricsFresh !== false);
+    // A long holder-ledger backfill can outlive the metrics-history window. Keep
+    // showing the most recent completed classification instead of reverting the
+    // card to "Indexing…" while the underlying token ledgers catch up.
+    return explicitlyVerified.length ? explicitlyVerified : (implicitlyVerified.length ? implicitlyVerified : points);
   }, [state]);
   const latestHolderMetrics = verifiedHolderPoints[0] || null;
   const holderBaseline24h = useMemo(() => {

@@ -43,7 +43,10 @@ const sleeveLpPositions = [
   { tokenId: 1_136_774n, pool: '0xAae0d815EE56e4092a5E5C2911E676Fea50B2d6D' },
   { tokenId: 1_136_775n, pool: '0x34d0dc122cf9a8eb296fc5e0d3a233625d7d19b7' },
 ];
-const DISCLOSED_SLEEVE_USD = 4_028_047.78;
+// Latest complete value disclosed by the protocol UI. This is the safe fallback
+// when a newly retired/replaced sleeve position makes the live composition
+// temporarily incomplete; never fall back to an older partial composition.
+const DISCLOSED_SLEEVE_USD = 4_980_671.98;
 const morphoAbi = [
   { type: 'function', name: 'position', stateMutability: 'view', inputs: [{ type: 'bytes32' }, { type: 'address' }], outputs: [{ type: 'tuple', components: [{ name: 'supplyShares', type: 'uint256' }, { name: 'borrowShares', type: 'uint128' }, { name: 'collateral', type: 'uint128' }] }] },
   { type: 'function', name: 'market', stateMutability: 'view', inputs: [{ type: 'bytes32' }], outputs: [{ type: 'tuple', components: [{ name: 'totalSupplyAssets', type: 'uint128' }, { name: 'totalSupplyShares', type: 'uint128' }, { name: 'totalBorrowAssets', type: 'uint128' }, { name: 'totalBorrowShares', type: 'uint128' }, { name: 'lastUpdate', type: 'uint128' }, { name: 'fee', type: 'uint128' }] }] },
@@ -313,10 +316,18 @@ function v3Amounts(liquidityRaw, sqrtPriceX96Raw, tickLower, tickUpper) {
 async function lpSleeveValue(marks) {
   let total = 0;
   for (const entry of sleeveLpPositions) {
-    const [position, slot0] = await Promise.all([
-      client.readContract({ address: SLEEVE.positionManager, abi: positionManagerAbi, functionName: 'positions', args: [entry.tokenId] }),
-      client.readContract({ address: entry.pool, abi: v3PoolAbi, functionName: 'slot0' }),
-    ]);
+    let position, slot0;
+    try {
+      [position, slot0] = await Promise.all([
+        client.readContract({ address: SLEEVE.positionManager, abi: positionManagerAbi, functionName: 'positions', args: [entry.tokenId] }),
+        client.readContract({ address: entry.pool, abi: v3PoolAbi, functionName: 'slot0' }),
+      ]);
+    } catch (error) {
+      // Position NFTs are burned after liquidity migrates. A retired position
+      // must not invalidate every other sleeve component or freeze True RFV.
+      console.log(`Skipping retired sleeve LP position ${entry.tokenId}: ${error.shortMessage || error.message}`);
+      continue;
+    }
     const [amount0, amount1] = v3Amounts(position[7], slot0[0], position[5], position[6]);
     const token0 = position[2].toLowerCase(), token1 = position[3].toLowerCase();
     const mark0 = marks.get(token0), mark1 = marks.get(token1);
@@ -447,7 +458,10 @@ async function collectMetrics(state, { classifyHolders = true } = {}) {
     : null;
   const previousSleeveUsd = [...(state.metricsHistory || [])].reverse()
     .find((point) => Number(point.rwaSleeveUsd) >= 1_000_000)?.rwaSleeveUsd;
-  const rwaSleeveUsd = liveSleeveUsd ?? previousSleeveUsd ?? DISCLOSED_SLEEVE_USD;
+  // The legacy live calculator does not yet cover the protocol's newer v4,
+  // Advance, Predict and Book components. Do not let that partial calculation
+  // overwrite the latest complete disclosed sleeve mark.
+  const rwaSleeveUsd = Math.max(liveSleeveUsd ?? 0, previousSleeveUsd ?? 0, DISCLOSED_SLEEVE_USD);
   const previousPoint = [...(state.metricsHistory || [])].reverse().find((point) => Number.isFinite(point.walletHolderCount));
   const vm = viewModel(state);
   let holderMetrics = null;

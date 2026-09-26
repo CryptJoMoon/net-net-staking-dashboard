@@ -29,7 +29,9 @@ jobs:
       - run: npm ci
       - name: Build snapshot with retries
         env:
-          HOLDER_CHUNKS: ${{ github.event_name == 'push' && '0' || '10' }}
+          # 30 x 5k blocks per token outruns normal chain growth; the previous
+          # 10-chunk budget could remain permanently behind the head.
+          HOLDER_CHUNKS: ${{ github.event_name == 'push' && '0' || '30' }}
           HOLDER_CHUNK_BLOCKS: '5000'
         run: |
           for attempt in 1 2 3; do
