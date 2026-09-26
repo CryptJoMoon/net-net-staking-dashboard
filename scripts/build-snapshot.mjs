@@ -53,6 +53,7 @@ const positionManagerAbi = [{ type: 'function', name: 'positions', stateMutabili
 ] }];
 const v3PoolAbi = [{ type: 'function', name: 'slot0', stateMutability: 'view', inputs: [], outputs: [{ name: 'sqrtPriceX96', type: 'uint160' }, { name: 'tick', type: 'int24' }, { name: 'observationIndex', type: 'uint16' }, { name: 'observationCardinality', type: 'uint16' }, { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'feeProtocol', type: 'uint8' }, { name: 'unlocked', type: 'bool' }] }];
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
+const wsNetAbi = [{ type: 'function', name: 'wsToSNet', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -569,8 +570,14 @@ const wsNetProgress = await advanceHolderLedger(WSNET_WRAPPER, state.wsNetBalanc
 if (wsNetProgress.throughBlock >= wsNetFromBlock) state.wsNetHolderCutoffBlock = wsNetProgress.throughBlock;
 state.holderCutoffBlock = Math.min(state.netHolderCutoffBlock, state.wsNetHolderCutoffBlock);
 const holderBackfillComplete = state.netHolderCutoffBlock >= cutoff && state.wsNetHolderCutoffBlock >= cutoff;
+try {
+  state.wsNetSNetPerToken = await client.readContract({ address: WSNET_WRAPPER, abi: wsNetAbi, functionName: 'wsToSNet', args: [1_000_000_000_000_000_000n] });
+  console.log(`wsNET conversion: 1 wsNET = ${Number(state.wsNetSNetPerToken) / 1e9} sNET`);
+} catch (error) {
+  console.warn(`wsNET conversion unavailable; retaining prior rate: ${error?.shortMessage || error?.message}`);
+}
 
-state.version = 9;
+state.version = 10;
 state.cutoffBlock = cutoff;
 state.winNetCutoffBlock = cutoff;
 state.indexedAt = new Date().toISOString();
