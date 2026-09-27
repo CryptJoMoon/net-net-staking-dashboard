@@ -18,6 +18,7 @@ const distributorAbi = [{ type: 'function', name: 'currentRateWad', stateMutabil
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
+const creditGrantedEvent = { type: 'event', name: 'CreditGranted', inputs: [{ name: 'account', type: 'address', indexed: true }, { name: 'amountNet', type: 'uint256', indexed: false }, { name: 'source', type: 'uint8', indexed: true }, { name: 'expiryPeriod', type: 'uint256', indexed: false }] };
 const DISCLOSED_SLEEVE_USD = 4_980_671.98;
 const NETNET_PRODUCT_INFRA = [
   '0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010', // Morpho
@@ -135,32 +136,38 @@ function App() {
   const loadWinNetBonusHistory = async (row) => {
     setBonusPlayer(row); setBonusGrants([]); setBonusError(''); setBonusStatus('Loading BonusBook grant history…');
     try {
-      const logs = await fetchLogs(CONFIG.winNetBonusBook, {
-        stopAt: CONFIG.winNetDeploymentBlock - 1,
-        onProgress: ({ page, count }) => setBonusStatus(`Loading BonusBook history… page ${page.toLocaleString()} · ${count.toLocaleString()} events`),
-      });
-      const parameter = (log, names) => {
-        const item = (log.decoded?.parameters || []).find((entry) => names.includes(String(entry.name || '').toLowerCase()));
-        return item?.value?.value ?? item?.value ?? null;
+      const chainHead = await publicClient.getBlockNumber();
+      let rangesRead = 0;
+      const readRange = async (fromBlock, toBlock) => {
+        try {
+          const found = await publicClient.getLogs({ address: CONFIG.winNetBonusBook, event: creditGrantedEvent, args: { account: row.address }, fromBlock, toBlock });
+          rangesRead += 1;
+          setBonusStatus(`Loading this player's grants… ${found.length.toLocaleString()} found`);
+          return found;
+        } catch (error) {
+          if (fromBlock >= toBlock) throw error;
+          const middle = (fromBlock + toBlock) / 2n;
+          const older = await readRange(fromBlock, middle);
+          const newer = await readRange(middle + 1n, toBlock);
+          return [...older, ...newer];
+        }
       };
-      const grants = logs.flatMap((log) => {
-        const eventName = String(log.decoded?.method_call || '').split('(')[0].toLowerCase();
-        if (eventName !== 'creditgranted') return [];
-        const account = String(parameter(log, ['account', 'player', 'user', 'recipient']) || '').toLowerCase();
-        if (account !== row.address.toLowerCase()) return [];
-        const amountNet = String(parameter(log, ['amountnet', 'amount', 'bonus', 'value']) || '0');
-        const sourceValue = String(parameter(log, ['source', 'bonussource']) ?? '');
-        const expiryPeriod = String(parameter(log, ['expiryperiod', 'expiry', 'expiresat', 'expirationperiod']) || '0');
-        let sourceIndex = null;
-        try { sourceIndex = Number(BigInt(sourceValue)); } catch { /* decoded enum label */ }
-        const source = sourceIndex != null && WINNET_BONUS_SOURCES[sourceIndex] ? WINNET_BONUS_SOURCES[sourceIndex] : (sourceValue || 'Other');
-        const currentPeriod = BigInt(data?.winNetCurrentPeriod || 0);
-        let expiry = 0n;
-        try { expiry = BigInt(expiryPeriod); } catch { /* malformed explorer value */ }
-        return [{ id: `${log.transaction_hash}:${log.index}`, amount: amountNet, source, sourceIndex, expiryPeriod, active: expiry === 0n || expiry >= currentPeriod, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash }];
+      const logs = await readRange(BigInt(CONFIG.winNetDeploymentBlock), chainHead);
+      const blockNumbers = [...new Set(logs.map((log) => log.blockNumber?.toString()).filter(Boolean))];
+      const blockTimes = new Map();
+      for (let start = 0; start < blockNumbers.length; start += 20) {
+        const batch = blockNumbers.slice(start, start + 20);
+        const blocks = await Promise.all(batch.map((blockNumber) => publicClient.getBlock({ blockNumber: BigInt(blockNumber) })));
+        blocks.forEach((block) => blockTimes.set(block.number.toString(), new Date(Number(block.timestamp) * 1000).toISOString()));
+      }
+      const currentPeriod = BigInt(data?.winNetCurrentPeriod || 0);
+      const grants = logs.map((log) => {
+        const sourceIndex = Number(log.args.source ?? 0);
+        const expiryPeriod = BigInt(log.args.expiryPeriod || 0);
+        return { id: `${log.transactionHash}:${log.logIndex}`, amount: String(log.args.amountNet || 0), source: WINNET_BONUS_SOURCES[sourceIndex] || `Other (${sourceIndex})`, sourceIndex, expiryPeriod: expiryPeriod.toString(), active: expiryPeriod > currentPeriod, block: Number(log.blockNumber), timestamp: blockTimes.get(log.blockNumber.toString()) || null, tx: log.transactionHash };
       }).sort((a, b) => b.block - a.block);
       setBonusGrants(grants);
-      setBonusStatus(grants.length ? `${grants.length.toLocaleString()} bonus grants found` : 'No decoded CreditGranted events found');
+      setBonusStatus(grants.length ? `${grants.length.toLocaleString()} grants · ${rangesRead.toLocaleString()} RPC range${rangesRead === 1 ? '' : 's'}` : 'No CreditGranted events found for this player');
     } catch (error) {
       setBonusStatus('Bonus history unavailable');
       setBonusError(error.message);
