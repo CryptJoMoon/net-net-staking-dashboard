@@ -41,6 +41,7 @@ const WINNET_VAULT = '0x7332b329860986e596b2fd71e9c53786c0242ce5';
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
 const WINNET_DRAW_CONTROLLER = '0xcC4A7C03A2d4D248B8dA0E35C178944799feac70';
 const confirmedUserWallets = new Set(['0xbde76bf3c7bbddd8d30fb1750bd62910b64dd55f']);
+const WINNET_BONUS_SOURCES = ['Welcome', 'Toll credit', 'Welcome match', 'Referral', 'Streak', 'Check-in', 'Shower', 'Competition', 'Consolation'];
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, ...NETNET_PRODUCT_INFRA, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const MOON_BAG_KEY = 'netnet-moon-math-bag-v1';
 const MOON_TARGETS_KEY = 'netnet-moon-math-market-targets-v1';
@@ -88,6 +89,7 @@ function App() {
   const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
   const [lotterySort, setLotterySort] = useState('drawPower');
+  const [bonusPlayer, setBonusPlayer] = useState(null), [bonusGrants, setBonusGrants] = useState([]), [bonusStatus, setBonusStatus] = useState(''), [bonusError, setBonusError] = useState('');
   const [flowFilter, setFlowFilter] = useState('all'), [flowSort, setFlowSort] = useState('outflow');
   const [historyAddress, setHistoryAddress] = useState(''), [historyEvents, setHistoryEvents] = useState([]), [historyStatus, setHistoryStatus] = useState('Enter a wallet address'), [historyError, setHistoryError] = useState(''), [historyPage, setHistoryPage] = useState(1);
   const [moonBag, setMoonBag] = useState(() => { try { return localStorage.getItem(MOON_BAG_KEY) ?? '100'; } catch { return '100'; } }), [moonScale, setMoonScale] = useState(0);
@@ -130,6 +132,40 @@ function App() {
     } catch (error) { setHistoryStatus('History unavailable'); setHistoryError(error.message); }
   };
   const openWalletHistory = (address) => { setTab('history'); setHistoryAddress(address); setTimeout(() => loadWalletHistory(address), 0); };
+  const loadWinNetBonusHistory = async (row) => {
+    setBonusPlayer(row); setBonusGrants([]); setBonusError(''); setBonusStatus('Loading BonusBook grant history…');
+    try {
+      const logs = await fetchLogs(CONFIG.winNetBonusBook, {
+        stopAt: CONFIG.winNetDeploymentBlock - 1,
+        onProgress: ({ page, count }) => setBonusStatus(`Loading BonusBook history… page ${page.toLocaleString()} · ${count.toLocaleString()} events`),
+      });
+      const parameter = (log, names) => {
+        const item = (log.decoded?.parameters || []).find((entry) => names.includes(String(entry.name || '').toLowerCase()));
+        return item?.value?.value ?? item?.value ?? null;
+      };
+      const grants = logs.flatMap((log) => {
+        const eventName = String(log.decoded?.method_call || '').split('(')[0].toLowerCase();
+        if (eventName !== 'creditgranted') return [];
+        const account = String(parameter(log, ['account', 'player', 'user', 'recipient']) || '').toLowerCase();
+        if (account !== row.address.toLowerCase()) return [];
+        const amountNet = String(parameter(log, ['amountnet', 'amount', 'bonus', 'value']) || '0');
+        const sourceValue = String(parameter(log, ['source', 'bonussource']) ?? '');
+        const expiryPeriod = String(parameter(log, ['expiryperiod', 'expiry', 'expiresat', 'expirationperiod']) || '0');
+        let sourceIndex = null;
+        try { sourceIndex = Number(BigInt(sourceValue)); } catch { /* decoded enum label */ }
+        const source = sourceIndex != null && WINNET_BONUS_SOURCES[sourceIndex] ? WINNET_BONUS_SOURCES[sourceIndex] : (sourceValue || 'Other');
+        const currentPeriod = BigInt(data?.winNetCurrentPeriod || 0);
+        let expiry = 0n;
+        try { expiry = BigInt(expiryPeriod); } catch { /* malformed explorer value */ }
+        return [{ id: `${log.transaction_hash}:${log.index}`, amount: amountNet, source, sourceIndex, expiryPeriod, active: expiry === 0n || expiry >= currentPeriod, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash }];
+      }).sort((a, b) => b.block - a.block);
+      setBonusGrants(grants);
+      setBonusStatus(grants.length ? `${grants.length.toLocaleString()} bonus grants found` : 'No decoded CreditGranted events found');
+    } catch (error) {
+      setBonusStatus('Bonus history unavailable');
+      setBonusError(error.message);
+    }
+  };
   const refresh = async (base, quiet = false) => {
     try {
       if (!quiet) setStatus('Checking the chain…'); setError('');
@@ -323,6 +359,15 @@ function App() {
     });
   }, [data, query, lotterySort, excludedAddresses]);
   const lotteryPages = Math.max(1, Math.ceil(lotteryRows.length / pageSize)), lotteryVisible = lotteryRows.slice((page - 1) * pageSize, page * pageSize);
+  const activeBonusGrants = bonusGrants.filter((grant) => grant.active);
+  const expiredBonusGrants = bonusGrants.filter((grant) => !grant.active);
+  const attributedActiveBonus = activeBonusGrants.reduce((sum, grant) => sum + BigInt(grant.amount || 0), 0n);
+  const exactActiveBonus = BigInt(bonusPlayer?.activeBonus || 0);
+  const bonusReconciliation = exactActiveBonus - attributedActiveBonus;
+  const bonusSourceTotals = [...activeBonusGrants.reduce((sources, grant) => {
+    sources.set(grant.source, (sources.get(grant.source) || 0n) + BigInt(grant.amount || 0));
+    return sources;
+  }, new Map())].sort((a, b) => a[1] === b[1] ? 0 : a[1] > b[1] ? -1 : 1);
   const flowPages = Math.max(1, Math.ceil(flowRows.length / pageSize)), flowVisible = flowRows.slice((page - 1) * pageSize, page * pageSize);
   const historyPages = Math.max(1, Math.ceil(historyEvents.length / pageSize)), historyVisible = historyEvents.slice((historyPage - 1) * pageSize, historyPage * pageSize);
   const historyAdds = historyEvents.filter((event) => event.type === 'Staked').reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
@@ -415,7 +460,21 @@ function App() {
       </div>
       <div className="flow-note">Draw power = lock-adjusted principal + active Bonus Draw Balance. Bonus weight affects odds only, is not withdrawable NET, and generally expires after 14 draws. Approximate odds use the controller's current total weight.</div>
       <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search WinNET wallet" /></label><div className="filters"><select value={lotterySort} onChange={(e) => setLotterySort(e.target.value)}><option value="drawPower">Sort: total draw power</option><option value="activeBonus">Sort: active bonus</option><option value="lockBoost">Sort: lock boost</option><option value="principal">Sort: principal</option><option value="wins">Sort: jackpot wins</option><option value="winnings">Sort: lifetime NET won</option><option value="address">Sort: address</option></select></div></div>
-      <div className="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th className="num">Principal</th><th className="num">Lock Boost</th><th className="num">Active Bonus</th><th className="num">Total Draw Power</th><th className="num">Bonus + Boost Share</th><th className="num">Approx. Odds</th><th className="num">Jackpot Wins</th><th className="num">Lifetime Won</th><th className="num">Winnings Value</th></tr></thead><tbody>{lotteryVisible.map((row, i) => <tr key={row.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={row.address}/><small className="last">{row.lastActive ? `Active ${ago(row.lastActive)}` : 'Current player'}</small></td><td className="num balance">{amount(row.balance, 2)} NET</td><td className="num reward">{BigInt(row.lockBoost || 0) > 0n ? `+${amount(row.lockBoost, 2)} NET` : '—'}</td><td className="num reward">{BigInt(row.activeBonus || 0) > 0n ? `+${amount(row.activeBonus, 2)} NET` : '—'}</td><td className="num balance">{amount(row.drawPower, 2)} NET</td><td className="num">{row.bonusShare > 0 ? `${row.bonusShare.toFixed(1)}%` : '0.0%'}</td><td className="num">{row.odds ? `1 in ${Math.max(1, Math.round(row.odds)).toLocaleString()}` : '—'}</td><td className="num reward">{(row.lotteryWins || 0).toLocaleString()}</td><td className="num reward">{amount(row.rewards || 0, 2)} NET</td><td className="num reward">{fund?.price > 0 ? usd(Number(row.rewards || 0) / 1e9 * fund.price) : '—'}</td></tr>)}</tbody></table>{!lotteryVisible.length && <div className="empty">No active WinNET players match this search.</div>}</div>
+      <div className="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th className="num">Principal</th><th className="num">Lock Boost</th><th className="num">Active Bonus</th><th className="num">Total Draw Power</th><th className="num">Bonus + Boost Share</th><th className="num">Approx. Odds</th><th className="num">Jackpot Wins</th><th className="num">Lifetime Won</th><th className="num">Winnings Value</th></tr></thead><tbody>{lotteryVisible.map((row, i) => <tr key={row.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={row.address}/><small className="last">{row.lastActive ? `Active ${ago(row.lastActive)}` : 'Current player'}</small></td><td className="num balance">{amount(row.balance, 2)} NET</td><td className="num reward">{BigInt(row.lockBoost || 0) > 0n ? `+${amount(row.lockBoost, 2)} NET` : '—'}</td><td className="num reward">{BigInt(row.activeBonus || 0) > 0n ? <button className="bonus-detail-button" type="button" onClick={() => loadWinNetBonusHistory(row)} title="Show where this bonus draw balance came from">+{amount(row.activeBonus, 2)} NET<small>View sources</small></button> : '—'}</td><td className="num balance">{amount(row.drawPower, 2)} NET</td><td className="num">{row.bonusShare > 0 ? `${row.bonusShare.toFixed(1)}%` : '0.0%'}</td><td className="num">{row.odds ? `1 in ${Math.max(1, Math.round(row.odds)).toLocaleString()}` : '—'}</td><td className="num reward">{(row.lotteryWins || 0).toLocaleString()}</td><td className="num reward">{amount(row.rewards || 0, 2)} NET</td><td className="num reward">{fund?.price > 0 ? usd(Number(row.rewards || 0) / 1e9 * fund.price) : '—'}</td></tr>)}</tbody></table>{!lotteryVisible.length && <div className="empty">No active WinNET players match this search.</div>}</div>
+      {bonusPlayer && <section className="bonus-details">
+        <div className="bonus-details-head"><div><small>Bonus Draw Balance explanation</small><strong><Address value={bonusPlayer.address}/></strong></div><button type="button" onClick={() => { setBonusPlayer(null); setBonusGrants([]); setBonusError(''); }}>Close</button></div>
+        <div className="bonus-detail-summary">
+          <div><small>Exact active bonus</small><strong>+{amount(exactActiveBonus, 2)} NET</strong><em>Contract balance</em></div>
+          <div><small>Active grants found</small><strong>{activeBonusGrants.length.toLocaleString()}</strong><em>{amount(attributedActiveBonus, 2)} NET attributed</em></div>
+          <div><small>Expired grants</small><strong>{expiredBonusGrants.length.toLocaleString()}</strong><em>{amount(expiredBonusGrants.reduce((sum, grant) => sum + BigInt(grant.amount || 0), 0n), 2)} NET historical</em></div>
+          <div><small>Current draw period</small><strong>#{Number(data.winNetCurrentPeriod || 0).toLocaleString()}</strong><em>{bonusStatus}</em></div>
+        </div>
+        {bonusError && <div className="notice">{bonusError}</div>}
+        {!!bonusSourceTotals.length && <div className="bonus-source-grid">{bonusSourceTotals.map(([source, total]) => <div key={source}><small>{source}</small><strong>+{amount(total, 2)} NET</strong></div>)}</div>}
+        {bonusReconciliation !== 0n && !bonusError && <div className="bonus-reconciliation">{bonusReconciliation > 0n ? <><b>{amount(bonusReconciliation, 2)} NET remains unattributed.</b> The contract's exact active total is still shown above; this portion may come from an adjustment or a grant the explorer has not decoded.</> : <><b>{amount(-bonusReconciliation, 2)} NET of decoded grants is no longer active.</b> The contract total takes precedence; the difference reflects expiry, revocation, or another BonusBook adjustment.</>}</div>}
+        <div className="flow-note">Bonus credits change lottery odds only and are not withdrawable NET. Source attribution comes from on-chain CreditGranted events; the exact active total always comes directly from BonusBook.</div>
+        <div className="tablewrap bonus-grants-table"><table><thead><tr><th>#</th><th>Source</th><th className="num">Bonus Weight</th><th>Status</th><th className="num">Expiry Draw</th><th>Granted</th><th className="num">Transaction</th></tr></thead><tbody>{bonusGrants.map((grant, index) => <tr key={grant.id}><td>{index + 1}</td><td><span className="bonus-source">{grant.source}</span></td><td className="num reward">+{amount(grant.amount, 4)} NET</td><td><span className={`bonus-state ${grant.active ? 'active' : 'expired'}`}>{grant.active ? 'Active' : 'Expired'}</span></td><td className="num">#{Number(grant.expiryPeriod || 0).toLocaleString()}</td><td>{when(grant.timestamp)}</td><td className="num"><a href={`${CONFIG.explorer}/tx/${grant.tx}`} target="_blank" rel="noreferrer">#{grant.block.toLocaleString()} <ExternalLink size={10}/></a></td></tr>)}</tbody></table>{!bonusGrants.length && <div className="empty">{bonusStatus || 'Select a bonus balance to view its sources.'}</div>}</div>
+      </section>}
       <div className="pager"><span>{lotteryRows.length.toLocaleString()} active players</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {lotteryPages}</b><button disabled={page === lotteryPages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
     </Window> : tab === 'flow' ? <Window title="24-Hour Staking Flow — Wallet Breakdown" className="flow-window">
       <div className="flow-summary">
