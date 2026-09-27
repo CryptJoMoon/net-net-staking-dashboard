@@ -16,7 +16,14 @@ const stakingAbi = [
 ];
 const distributorAbi = [{ type: 'function', name: 'currentRateWad', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
-const drawControllerAbi = [{ type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
+const drawControllerAbi = [
+  { type: 'function', name: 'treeSize', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'currentPeriod', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalWeight', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'weightOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
+];
+const bonusBookPowerAbi = [{ type: 'function', name: 'activeBonusOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }, { name: 'period', type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
+const prizeVaultPowerAbi = [{ type: 'function', name: 'boostedPrincipalOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
 const creditGrantedEvent = { type: 'event', name: 'CreditGranted', inputs: [{ name: 'account', type: 'address', indexed: true }, { name: 'amountNet', type: 'uint256', indexed: false }, { name: 'source', type: 'uint8', indexed: true }, { name: 'expiryPeriod', type: 'uint256', indexed: false }] };
 const DISCLOSED_SLEEVE_USD = 4_980_671.98;
@@ -133,6 +140,29 @@ function App() {
     } catch (error) { setHistoryStatus('History unavailable'); setHistoryError(error.message); }
   };
   const openWalletHistory = (address) => { setTab('history'); setHistoryAddress(address); setTimeout(() => loadWalletHistory(address), 0); };
+  const refreshRecentWinNetPower = async (base, logs) => {
+    const accounts = [...new Set(logs.map((log) => log.topics?.[1] ? `0x${log.topics[1].slice(-40)}`.toLowerCase() : null).filter((address) => address && base.winNetWallets.has(address)))];
+    if (!accounts.length) return;
+    const [period, totalWeight] = await Promise.all([
+      publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'currentPeriod' }),
+      publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'totalWeight' }),
+    ]);
+    for (let start = 0; start < accounts.length; start += 20) {
+      const batch = accounts.slice(start, start + 20);
+      const values = await Promise.all(batch.flatMap((account) => [
+        publicClient.readContract({ address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [account] }),
+        publicClient.readContract({ address: CONFIG.winNetBonusBook, abi: bonusBookPowerAbi, functionName: 'activeBonusOf', args: [account, period] }),
+        publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'weightOf', args: [account] }),
+      ]));
+      batch.forEach((account, index) => {
+        const wallet = base.winNetWallets.get(account);
+        if (!wallet) return;
+        const boostedPrincipal = BigInt(values[index * 3] || 0), activeBonus = BigInt(values[index * 3 + 1] || 0), drawPower = BigInt(values[index * 3 + 2] || 0), principal = BigInt(wallet.principal || 0);
+        base.winNetWallets.set(account, { ...wallet, boostedPrincipal: boostedPrincipal.toString(), lockBoost: (boostedPrincipal > principal ? boostedPrincipal - principal : 0n).toString(), activeBonus: activeBonus.toString(), drawPower: drawPower.toString() });
+      });
+    }
+    base.winNetCurrentPeriod = period.toString(); base.winNetTotalWeight = totalWeight.toString(); base.winNetPowerAt = new Date().toISOString();
+  };
   const loadWinNetBonusHistory = async (row) => {
     setBonusPlayer(row); setBonusGrants([]); setBonusError(''); setBonusStatus('Loading BonusBook grant history…');
     try {
@@ -182,6 +212,7 @@ function App() {
       const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff: confirmed }), fetchRpcWinNetDraws(winNetStopAt + 1, confirmed).catch(() => [])]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
       applyWinNetLogs(base, [...winNet, ...winNetDraws, ...rpcWinNetDraws]); base.winNetCutoffBlock = confirmed;
+      await refreshRecentWinNetPower(base, winNet).catch(() => {});
       setState({ ...base }); setStatus('Live');
     } catch (e) { setError(e.message); setStatus('Snapshot mode'); setState({ ...base }); }
   };
