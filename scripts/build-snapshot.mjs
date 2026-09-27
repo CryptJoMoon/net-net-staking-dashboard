@@ -1,11 +1,18 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, decodeFunctionResult, encodeFunctionData, http } from 'viem';
 import { CONFIG, applyLogs, applyWinNetLogs, emptyState, hydrate, serialize, viewModel } from '../src/indexer.js';
 
 const treasuryAbi = [{ type: 'function', name: 'rfv', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const erc20Abi = [{ type: 'function', name: 'totalSupply', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] }, { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] }];
 const stakingAbi = [{ type: 'function', name: 'totalStaked', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const drawSettledEvent = { type: 'event', name: 'DrawSettled', inputs: [{ name: 'drawId', type: 'uint256', indexed: true }, { name: 'winner', type: 'address', indexed: true }, { name: 'prizeNet', type: 'uint256', indexed: false }, { name: 'burnedNet', type: 'uint256', indexed: false }] };
+const drawPowerAbi = [
+  { type: 'function', name: 'currentPeriod', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'totalWeight', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'weightOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
+];
+const bonusBookAbi = [{ type: 'function', name: 'activeBonusOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }, { name: 'period', type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
+const prizeVaultPowerAbi = [{ type: 'function', name: 'boostedPrincipalOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] }];
 const transferEvent = { type: 'event', name: 'Transfer', inputs: [{ name: 'from', type: 'address', indexed: true }, { name: 'to', type: 'address', indexed: true }, { name: 'value', type: 'uint256', indexed: false }] };
 const oracleAbi = [{ type: 'function', name: 'twapNetUsdg', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] }];
 const SLEEVE = {
@@ -122,6 +129,73 @@ async function fetchRpcCodes(addresses) {
     await pause(75);
   }
   return codes;
+}
+
+async function rpcCallBatch(calls, depth = 0) {
+  if (!calls.length) return [];
+  let lastError = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const response = await fetch(CONFIG.rpc, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(calls.map((call, id) => ({ jsonrpc: '2.0', id, method: 'eth_call', params: [{ to: call.address, data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args || [] }) }, 'latest'] }))),
+      });
+      const result = response.ok ? await response.json() : null;
+      if (Array.isArray(result)) {
+        const byId = new Map(result.map((item) => [item.id, item]));
+        return calls.map((call, id) => {
+          const item = byId.get(id);
+          if (!item?.result || item.error) throw new Error(item?.error?.message || `Missing RPC result ${id}`);
+          return decodeFunctionResult({ abi: call.abi, functionName: call.functionName, data: item.result });
+        });
+      }
+      lastError = new Error('RPC did not return a batch response');
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt < 4) await pause(750 * (attempt + 1));
+  }
+  if (calls.length > 1) {
+    const middle = Math.ceil(calls.length / 2);
+    const [left, right] = await Promise.all([rpcCallBatch(calls.slice(0, middle), depth + 1), rpcCallBatch(calls.slice(middle), depth + 1)]);
+    return [...left, ...right];
+  }
+  const call = calls[0];
+  try {
+    return [await client.readContract({ address: call.address, abi: call.abi, functionName: call.functionName, args: call.args || [] })];
+  } catch (error) {
+    throw lastError || error;
+  }
+}
+
+async function refreshWinNetDrawPower(state) {
+  const [period, totalWeight] = await Promise.all([
+    client.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'currentPeriod' }),
+    client.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'totalWeight' }),
+  ]);
+  const wallets = [...state.winNetWallets.entries()].filter(([, wallet]) => BigInt(wallet.principal || 0) > 0n);
+  let refreshed = 0;
+  for (let start = 0; start < wallets.length; start += 50) {
+    const batch = wallets.slice(start, start + 50);
+    const calls = batch.flatMap(([, wallet]) => [
+      { address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [wallet.address] },
+      { address: CONFIG.winNetBonusBook, abi: bonusBookAbi, functionName: 'activeBonusOf', args: [wallet.address, period] },
+      { address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'weightOf', args: [wallet.address] },
+    ]);
+    const values = await rpcCallBatch(calls);
+    batch.forEach(([key, wallet], index) => {
+      const boostedPrincipal = BigInt(values[index * 3] || 0), activeBonus = BigInt(values[index * 3 + 1] || 0), drawPower = BigInt(values[index * 3 + 2] || 0);
+      const principal = BigInt(wallet.principal || 0);
+      state.winNetWallets.set(key, { ...wallet, boostedPrincipal: boostedPrincipal.toString(), lockBoost: (boostedPrincipal > principal ? boostedPrincipal - principal : 0n).toString(), activeBonus: activeBonus.toString(), drawPower: drawPower.toString() });
+      refreshed += 1;
+    });
+    await pause(100);
+  }
+  state.winNetCurrentPeriod = period.toString();
+  state.winNetTotalWeight = totalWeight.toString();
+  state.winNetPowerAt = new Date().toISOString();
+  console.log(`WinNET draw power: period=${period} wallets=${refreshed} total=${Number(totalWeight) / 1e9} NET`);
 }
 
 async function fetchLegacyHolderWallets(token) {
@@ -607,6 +681,11 @@ try {
   console.log(`wsNET conversion: 1 wsNET = ${Number(state.wsNetSNetPerToken) / 1e9} sNET`);
 } catch (error) {
   console.warn(`wsNET conversion unavailable; retaining prior rate: ${error?.shortMessage || error?.message}`);
+}
+try {
+  await refreshWinNetDrawPower(state);
+} catch (error) {
+  console.warn(`WinNET draw-power refresh unavailable; retaining prior values: ${error?.shortMessage || error?.message}`);
 }
 
 state.version = 10;

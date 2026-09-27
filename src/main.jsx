@@ -87,6 +87,7 @@ function App() {
   const [state, setState] = useState(null), [head, setHead] = useState(null), [status, setStatus] = useState('Loading historical ledger…'), [error, setError] = useState('');
   const [fund, setFund] = useState(null);
   const [tab, setTab] = useState('stakers'), [venue, setVenue] = useState('all'), [query, setQuery] = useState(''), [sort, setSort] = useState('balance'), [page, setPage] = useState(1);
+  const [lotterySort, setLotterySort] = useState('drawPower');
   const [flowFilter, setFlowFilter] = useState('all'), [flowSort, setFlowSort] = useState('outflow');
   const [historyAddress, setHistoryAddress] = useState(''), [historyEvents, setHistoryEvents] = useState([]), [historyStatus, setHistoryStatus] = useState('Enter a wallet address'), [historyError, setHistoryError] = useState(''), [historyPage, setHistoryPage] = useState(1);
   const [moonBag, setMoonBag] = useState(() => { try { return localStorage.getItem(MOON_BAG_KEY) ?? '100'; } catch { return '100'; } }), [moonScale, setMoonScale] = useState(0);
@@ -307,12 +308,27 @@ function App() {
     });
   }, [data, venue, query, sort, excludedAddresses]);
   const pageSize = 25, pages = Math.max(1, Math.ceil(rows.length / pageSize)), visible = rows.slice((page - 1) * pageSize, page * pageSize);
+  const lotteryRows = useMemo(() => {
+    if (!data) return [];
+    const q = query.toLowerCase().trim();
+    return (data.winNetStakers || []).filter((row) => BigInt(row.balance || 0) > 0n && !excludedAddresses.has(row.address.toLowerCase()) && (!q || row.address.toLowerCase().includes(q))).map((row) => {
+      const power = BigInt(row.drawPower || 0), bonus = BigInt(row.activeBonus || 0), lock = BigInt(row.lockBoost || 0);
+      const odds = power > 0n && BigInt(data.winNetTotalWeight || 0) > 0n ? Number(BigInt(data.winNetTotalWeight) / power) : null;
+      return { ...row, drawPower: power.toString(), activeBonus: bonus.toString(), lockBoost: lock.toString(), odds, bonusShare: power > 0n ? Number(bonus + lock) / Number(power) * 100 : 0 };
+    }).sort((a, b) => {
+      if (lotterySort === 'address') return a.address.localeCompare(b.address);
+      const field = lotterySort === 'principal' ? 'balance' : lotterySort === 'wins' ? 'lotteryWins' : lotterySort === 'winnings' ? 'rewards' : lotterySort;
+      const av = BigInt(a[field] || 0), bv = BigInt(b[field] || 0);
+      return av === bv ? 0 : av > bv ? -1 : 1;
+    });
+  }, [data, query, lotterySort, excludedAddresses]);
+  const lotteryPages = Math.max(1, Math.ceil(lotteryRows.length / pageSize)), lotteryVisible = lotteryRows.slice((page - 1) * pageSize, page * pageSize);
   const flowPages = Math.max(1, Math.ceil(flowRows.length / pageSize)), flowVisible = flowRows.slice((page - 1) * pageSize, page * pageSize);
   const historyPages = Math.max(1, Math.ceil(historyEvents.length / pageSize)), historyVisible = historyEvents.slice((historyPage - 1) * pageSize, historyPage * pageSize);
   const historyAdds = historyEvents.filter((event) => event.type === 'Staked').reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
   const historyRemovals = historyEvents.filter((event) => event.type === 'Unstaked').reduce((sum, event) => sum + BigInt(event.amount || 0), 0n);
   const historyWallet = historyAddress ? (data?.stakers || []).find((row) => row.address.toLowerCase() === historyAddress.toLowerCase()) : null;
-  useEffect(() => setPage(1), [venue, query, sort, flowFilter, flowSort, tab]);
+  useEffect(() => setPage(1), [venue, query, sort, lotterySort, flowFilter, flowSort, tab]);
   const openFlow = () => { setTab('flow'); setPage(1); setTimeout(() => document.querySelector('.flow-window')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0); };
   if (!data) return <main className="desktop"><div className="boot">NET STAKING LEDGER<br/><span>Reconstructing shareholder records…</span></div></main>;
   const lag = head == null ? null : Math.max(0, head - data.cutoffBlock);
@@ -357,7 +373,7 @@ function App() {
   };
   return <main className="desktop"><div className="frame">
     <Window title="NET Staking Ledger — Robinhood Chain" className="masthead">
-      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Wallet <u>H</u>istory</button><button className={tab === 'moon' ? 'active' : ''} onClick={() => setTab('moon')}><u>M</u>oon Math</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
+      <div className="menu"><button className={tab === 'stakers' ? 'active' : ''} onClick={() => setTab('stakers')}><u>S</u>takers</button><button className={tab === 'lottery' ? 'active' : ''} onClick={() => setTab('lottery')}>WinNET <u>P</u>ower</button><button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><u>A</u>ctivity</button><button className={tab === 'flow' ? 'active' : ''} onClick={() => setTab('flow')}>24h <u>F</u>low</button><button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>Wallet <u>H</u>istory</button><button className={tab === 'moon' ? 'active' : ''} onClick={() => setTab('moon')}><u>M</u>oon Math</button><a href={`${CONFIG.explorer}/address/${CONFIG.staking}?tab=read_write_contract`} target="_blank" rel="noreferrer">Verified Contract</a></div>
       <div className="brand"><div className="crt">NET</div><div><p>NETNET CAPITAL</p><h1>Shareholder Staking Ledger</h1><span>Independent, read-only onchain records</span></div><div className="livebox"><i className={status === 'Live' ? 'on' : ''}/><b>{status}</b><small>{lag == null ? 'Connecting' : `${lag.toLocaleString()} blocks behind head`}</small></div></div>
       {error && <div className="notice">{error}</div>}
     </Window>
@@ -390,6 +406,17 @@ function App() {
       <div className="flow-note">wsNET balances are converted to their live underlying sNET value using the wrapper contract. Direct activity columns do not estimate historical wsNET wraps, transfers, or accrued rewards.</div>
       <div className="tablewrap"><table><thead><tr><th>#</th><th>Staker</th><th>Venue</th><th className="num">Direct Adds</th><th className="num">Direct Removals</th><th className="num">Direct Rewards</th><th className="num">Lottery Wins</th><th className="num">Lottery Winnings USD</th><th className="num">Stake Balance<small className="th-note">sNET equivalent</small></th><th className="num">Current USD Value</th><th className="num">Est. Staking Earnings / Day<small className="th-note">Direct + wsNET · 3 epochs</small></th><th className="num">Direct Actions</th></tr></thead><tbody>{visible.map((r, i) => <tr key={`${r.address}-${r.venue}`}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={r.address} onHistory={openWalletHistory}/><small className="last">{r.lastActive ? `Active ${ago(r.lastActive)}` : 'Current holder'}</small></td><td><span className={`venue ${r.venue.toLowerCase().replaceAll(' ', '-')}`}>{r.venue}</span></td><td className="num up">{r.hasDirectHistory ? `+${amount(r.added)}` : '—'}</td><td className="num down">{r.hasDirectHistory ? `−${amount(r.removed)}` : '—'}</td><td className="num reward">{r.hasDirectHistory ? `+${amount(r.rewards)}` : '—'}</td><td className="num reward">{r.lotteryWins > 0 ? r.lotteryWins.toLocaleString() : '—'}</td><td className="num reward">{BigInt(r.lotteryWinnings || 0) > 0n ? (fund?.price > 0 ? usd(Number(r.lotteryWinnings) / 1e9 * fund.price) : '—') : '—'}</td><td className="num balance">{amount(r.balance)}</td><td className="num balance">{fund?.price > 0 ? usd(Number(r.balance) / 1e9 * fund.price) : '—'}</td><td className="num reward">{fund?.dailyRate != null && BigInt(r.earningBalance || 0) > 0n ? <>{(Number(r.earningBalance) / 1e9 * fund.dailyRate).toLocaleString(undefined, { maximumFractionDigits: 4 })} NET<small className="last">{fund.price > 0 ? `${usd(Number(r.earningBalance) / 1e9 * fund.dailyRate * fund.price)} at current TWAP` : 'USD value loading'}</small></> : '—'}</td><td className="num muted">{r.hasDirectHistory ? `${r.stakes} / ${r.unstakes}` : '—'}</td></tr>)}</tbody></table>{!visible.length && <div className="empty">No matching staking addresses.</div>}</div>
       <div className="pager"><span>{rows.length.toLocaleString()} records</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {pages}</b><button disabled={page === pages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
+    </Window> : tab === 'lottery' ? <Window title="WinNET Draw Power — Tonight's On-Chain Lottery Weights" className="lottery-power-window">
+      <div className="flow-summary">
+        <div><small>Active players</small><strong>{lotteryRows.length.toLocaleString()}</strong></div>
+        <div><small>Total draw power</small><strong>{amount(data.winNetTotalWeight || 0, 2)} NET</strong></div>
+        <div><small>Current period</small><strong>#{Number(data.winNetCurrentPeriod || 0).toLocaleString()}</strong></div>
+        <div><small>Power snapshot</small><strong>{data.winNetPowerAt ? ago(data.winNetPowerAt) : 'Pending'}</strong></div>
+      </div>
+      <div className="flow-note">Draw power = lock-adjusted principal + active Bonus Draw Balance. Bonus weight affects odds only, is not withdrawable NET, and generally expires after 14 draws. Approximate odds use the controller's current total weight.</div>
+      <div className="toolbar"><label><Search size={14}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search WinNET wallet" /></label><div className="filters"><select value={lotterySort} onChange={(e) => setLotterySort(e.target.value)}><option value="drawPower">Sort: total draw power</option><option value="activeBonus">Sort: active bonus</option><option value="lockBoost">Sort: lock boost</option><option value="principal">Sort: principal</option><option value="wins">Sort: jackpot wins</option><option value="winnings">Sort: lifetime NET won</option><option value="address">Sort: address</option></select></div></div>
+      <div className="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th className="num">Principal</th><th className="num">Lock Boost</th><th className="num">Active Bonus</th><th className="num">Total Draw Power</th><th className="num">Bonus + Boost Share</th><th className="num">Approx. Odds</th><th className="num">Jackpot Wins</th><th className="num">Lifetime Won</th><th className="num">Winnings Value</th></tr></thead><tbody>{lotteryVisible.map((row, i) => <tr key={row.address}><td>{(page - 1) * pageSize + i + 1}</td><td><Address value={row.address}/><small className="last">{row.lastActive ? `Active ${ago(row.lastActive)}` : 'Current player'}</small></td><td className="num balance">{amount(row.balance, 2)} NET</td><td className="num reward">{BigInt(row.lockBoost || 0) > 0n ? `+${amount(row.lockBoost, 2)} NET` : '—'}</td><td className="num reward">{BigInt(row.activeBonus || 0) > 0n ? `+${amount(row.activeBonus, 2)} NET` : '—'}</td><td className="num balance">{amount(row.drawPower, 2)} NET</td><td className="num">{row.bonusShare > 0 ? `${row.bonusShare.toFixed(1)}%` : '0.0%'}</td><td className="num">{row.odds ? `1 in ${Math.max(1, Math.round(row.odds)).toLocaleString()}` : '—'}</td><td className="num reward">{(row.lotteryWins || 0).toLocaleString()}</td><td className="num reward">{amount(row.rewards || 0, 2)} NET</td><td className="num reward">{fund?.price > 0 ? usd(Number(row.rewards || 0) / 1e9 * fund.price) : '—'}</td></tr>)}</tbody></table>{!lotteryVisible.length && <div className="empty">No active WinNET players match this search.</div>}</div>
+      <div className="pager"><span>{lotteryRows.length.toLocaleString()} active players</span><div><button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>Previous</button><b>Page {page} of {lotteryPages}</b><button disabled={page === lotteryPages} onClick={() => setPage((p) => p + 1)}>Next</button></div></div>
     </Window> : tab === 'flow' ? <Window title="24-Hour Staking Flow — Wallet Breakdown" className="flow-window">
       <div className="flow-summary">
         <div><small>Wallets active</small><strong>{flowAnalysis.rows.length.toLocaleString()}</strong></div>
