@@ -83,6 +83,17 @@ const short = (a) => a ? `${a.slice(0, 6)}…${a.slice(-4)}` : 'Protocol';
 const when = (date) => date ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'UTC' }).format(new Date(date)) + ' UTC' : '—';
 const ago = (date) => { if (!date) return '—'; const s = Math.max(0, (Date.now() - new Date(date).getTime()) / 1000); return s < 60 ? `${Math.floor(s)}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`; };
 
+
+async function readWinNetPower(account, knownPeriod = null) {
+  const period = knownPeriod ?? await publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'currentPeriod' });
+  const [boostedPrincipal, activeBonus, drawPower] = await Promise.all([
+    publicClient.readContract({ address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [account] }),
+    publicClient.readContract({ address: CONFIG.winNetBonusBook, abi: bonusBookPowerAbi, functionName: 'activeBonusOf', args: [account, period] }),
+    publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'weightOf', args: [account] }),
+  ]);
+  return { period, boostedPrincipal: BigInt(boostedPrincipal), activeBonus: BigInt(activeBonus), drawPower: BigInt(drawPower) };
+}
+
 function Window({ title, children, className = '' }) {
   return <section className={`window ${className}`}><div className="titlebar"><span>{title}</span><span className="glyphs"><i>_</i><i>□</i></span></div>{children}</section>;
 }
@@ -140,8 +151,10 @@ function App() {
     } catch (error) { setHistoryStatus('History unavailable'); setHistoryError(error.message); }
   };
   const openWalletHistory = (address) => { setTab('history'); setHistoryAddress(address); setTimeout(() => loadWalletHistory(address), 0); };
-  const refreshRecentWinNetPower = async (base, logs) => {
-    const accounts = [...new Set(logs.map((log) => log.topics?.[1] ? `0x${log.topics[1].slice(-40)}`.toLowerCase() : null).filter((address) => address && base.winNetWallets.has(address)))];
+  const refreshRecentWinNetPower = async (base, logs, fromBlock) => {
+    const logAccounts = logs.map((log) => log.topics?.[1] ? \`0x\${log.topics[1].slice(-40)}\`.toLowerCase() : null);
+    const activityAccounts = (base.winNetActivity || []).filter((event) => event.block > fromBlock).map((event) => event.actor?.toLowerCase());
+    const accounts = [...new Set([...logAccounts, ...activityAccounts].filter((address) => address && base.winNetWallets.has(address)))];
     if (!accounts.length) return;
     const [period, totalWeight] = await Promise.all([
       publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'currentPeriod' }),
@@ -149,15 +162,11 @@ function App() {
     ]);
     for (let start = 0; start < accounts.length; start += 20) {
       const batch = accounts.slice(start, start + 20);
-      const values = await Promise.all(batch.flatMap((account) => [
-        publicClient.readContract({ address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [account] }),
-        publicClient.readContract({ address: CONFIG.winNetBonusBook, abi: bonusBookPowerAbi, functionName: 'activeBonusOf', args: [account, period] }),
-        publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'weightOf', args: [account] }),
-      ]));
+      const values = await Promise.all(batch.map((account) => readWinNetPower(account, period)));
       batch.forEach((account, index) => {
         const wallet = base.winNetWallets.get(account);
         if (!wallet) return;
-        const boostedPrincipal = BigInt(values[index * 3] || 0), activeBonus = BigInt(values[index * 3 + 1] || 0), drawPower = BigInt(values[index * 3 + 2] || 0), principal = BigInt(wallet.principal || 0);
+        const { boostedPrincipal, activeBonus, drawPower } = values[index], principal = BigInt(wallet.principal || 0);
         base.winNetWallets.set(account, { ...wallet, boostedPrincipal: boostedPrincipal.toString(), lockBoost: (boostedPrincipal > principal ? boostedPrincipal - principal : 0n).toString(), activeBonus: activeBonus.toString(), drawPower: drawPower.toString() });
       });
     }
@@ -212,7 +221,7 @@ function App() {
       const [staking, sNet, winNet, winNetDraws, rpcWinNetDraws] = await Promise.all([fetchLogs(CONFIG.staking, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.sNet, { stopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNet, { stopAt: winNetStopAt, cutoff: confirmed }), fetchLogs(CONFIG.winNetDrawController, { stopAt: winNetStopAt, cutoff: confirmed }), fetchRpcWinNetDraws(winNetStopAt + 1, confirmed).catch(() => [])]);
       applyLogs(base, [...staking, ...sNet]); base.cutoffBlock = confirmed; base.indexedAt = new Date().toISOString();
       applyWinNetLogs(base, [...winNet, ...winNetDraws, ...rpcWinNetDraws]); base.winNetCutoffBlock = confirmed;
-      await refreshRecentWinNetPower(base, winNet).catch(() => {});
+      await refreshRecentWinNetPower(base, winNet, winNetStopAt).catch(() => {});
       setState({ ...base }); setStatus('Live');
     } catch (e) { setError(e.message); setStatus('Snapshot mode'); setState({ ...base }); }
   };
@@ -229,6 +238,26 @@ function App() {
     })();
     return () => { alive = false; clearInterval(timer); };
   }, []);
+  useEffect(() => {
+    const account = query.trim().toLowerCase();
+    if (tab !== 'lottery' || !/^0x[a-f0-9]{40}$/.test(account) || !state?.winNetWallets?.has(account)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const power = await readWinNetPower(account);
+        const totalWeight = await publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'totalWeight' });
+        if (cancelled) return;
+        setState((current) => {
+          const wallet = current?.winNetWallets?.get(account);
+          if (!wallet) return current;
+          const principal = BigInt(wallet.principal || 0), winNetWallets = new Map(current.winNetWallets);
+          winNetWallets.set(account, { ...wallet, boostedPrincipal: power.boostedPrincipal.toString(), lockBoost: (power.boostedPrincipal > principal ? power.boostedPrincipal - principal : 0n).toString(), activeBonus: power.activeBonus.toString(), drawPower: power.drawPower.toString() });
+          return { ...current, winNetWallets, winNetCurrentPeriod: power.period.toString(), winNetTotalWeight: totalWeight.toString(), winNetPowerAt: new Date().toISOString() };
+        });
+      } catch { /* keep the indexed snapshot when a live contract read is unavailable */ }
+    })();
+    return () => { cancelled = true; };
+  }, [query, tab]);
   useEffect(() => {
     let alive = true;
     const loadFund = async () => {
