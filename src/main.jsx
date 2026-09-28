@@ -174,6 +174,7 @@ function App() {
   };
   const loadWinNetBonusHistory = async (row) => {
     setBonusPlayer(row); setBonusGrants([]); setBonusError(''); setBonusStatus('Loading BonusBook grant history…');
+    setTimeout(() => document.querySelector('.bonus-details')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
     try {
       const chainHead = await publicClient.getBlockNumber();
       let rangesRead = 0;
