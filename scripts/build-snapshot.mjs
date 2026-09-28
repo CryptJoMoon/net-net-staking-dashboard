@@ -63,8 +63,10 @@ const positionManagerAbi = [{ type: 'function', name: 'positions', stateMutabili
 ] }];
 const v3PoolAbi = [{ type: 'function', name: 'slot0', stateMutability: 'view', inputs: [], outputs: [{ name: 'sqrtPriceX96', type: 'uint160' }, { name: 'tick', type: 'int24' }, { name: 'observationIndex', type: 'uint16' }, { name: 'observationCardinality', type: 'uint16' }, { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'feeProtocol', type: 'uint8' }, { name: 'unlocked', type: 'bool' }] }];
 const WSNET_WRAPPER = '0x63c12667638f2ae6fc6ae09b43d98ec84a8586ea';
+const WINNET_FALLBACK_RPC = 'https://robinhood-rpc.publicnode.com';
 const wsNetAbi = [{ type: 'function', name: 'wsToSNet', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'uint256' }] }];
 const client = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 4, timeout: 15_000 }) });
+const winNetFallbackClient = createPublicClient({ transport: http(WINNET_FALLBACK_RPC, { retryCount: 2, timeout: 15_000 }) });
 const NETNET_PRODUCT_INFRA = [
   SLEEVE.morpho,
   '0x3Bb7A23316f82C0e984fA2E784846d8928a35f42', // team multisig / protocol Safe
@@ -134,9 +136,10 @@ async function fetchRpcCodes(addresses) {
 async function rpcCallBatch(calls, depth = 0) {
   if (!calls.length) return [];
   let lastError = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  const endpoints = [CONFIG.rpc, WINNET_FALLBACK_RPC];
+  for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
-      const response = await fetch(CONFIG.rpc, {
+      const response = await fetch(endpoints[attempt % endpoints.length], {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(calls.map((call, id) => ({ jsonrpc: '2.0', id, method: 'eth_call', params: [{ to: call.address, data: encodeFunctionData({ abi: call.abi, functionName: call.functionName, args: call.args || [] }) }, 'latest'] }))),
@@ -154,7 +157,7 @@ async function rpcCallBatch(calls, depth = 0) {
     } catch (error) {
       lastError = error;
     }
-    if (attempt < 4) await pause(750 * (attempt + 1));
+    if (attempt < 5) await pause(500 * (attempt + 1));
   }
   if (calls.length > 1) {
     const middle = Math.ceil(calls.length / 2);
@@ -162,19 +165,27 @@ async function rpcCallBatch(calls, depth = 0) {
     return [...left, ...right];
   }
   const call = calls[0];
-  try {
-    return [await client.readContract({ address: call.address, abi: call.abi, functionName: call.functionName, args: call.args || [] })];
-  } catch (error) {
-    console.warn(`Skipping failed contract read ${call.functionName}: ${(lastError || error)?.shortMessage || (lastError || error)?.message}`);
-    return [null];
+  for (const rpcClient of [client, winNetFallbackClient]) {
+    try {
+      return [await rpcClient.readContract({ address: call.address, abi: call.abi, functionName: call.functionName, args: call.args || [] })];
+    } catch (error) { lastError = error; }
   }
+  console.warn(`Skipping failed contract read ${call.functionName}: ${lastError?.shortMessage || lastError?.message}`);
+  return [null];
 }
 
 async function refreshWinNetDrawPower(state) {
-  const [period, totalWeight] = await Promise.all([
-    client.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'currentPeriod' }),
-    client.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'totalWeight' }),
-  ]);
+  let period, totalWeight, headerError;
+  for (const rpcClient of [client, winNetFallbackClient]) {
+    try {
+      [period, totalWeight] = await Promise.all([
+        rpcClient.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'currentPeriod' }),
+        rpcClient.readContract({ address: CONFIG.winNetDrawController, abi: drawPowerAbi, functionName: 'totalWeight' }),
+      ]);
+      break;
+    } catch (error) { headerError = error; }
+  }
+  if (period == null || totalWeight == null) throw headerError;
   const wallets = [...state.winNetWallets.entries()].filter(([, wallet]) => BigInt(wallet.principal || 0) > 0n);
   let refreshed = 0;
   for (let start = 0; start < wallets.length; start += 50) {
@@ -196,7 +207,8 @@ async function refreshWinNetDrawPower(state) {
   }
   state.winNetCurrentPeriod = period.toString();
   state.winNetTotalWeight = totalWeight.toString();
-  state.winNetPowerAt = new Date().toISOString();
+  if (refreshed === wallets.length) state.winNetPowerAt = new Date().toISOString();
+  else console.warn(`WinNET power snapshot incomplete: refreshed ${refreshed}/${wallets.length}; retaining prior timestamp`);
   console.log(`WinNET draw power: period=${period} wallets=${refreshed} total=${Number(totalWeight) / 1e9} NET`);
 }
 

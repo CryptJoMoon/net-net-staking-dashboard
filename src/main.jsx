@@ -53,8 +53,10 @@ const WINNET_BONUS_SOURCES = ['Welcome', 'Toll credit', 'Welcome match', 'Referr
 const knownInfra = new Set([CONFIG.net, CONFIG.sNet, CONFIG.staking, CONFIG.treasury, CONFIG.genesisBond, CONFIG.bondDepository, CONFIG.taxCollector, CONFIG.pairOracle, CONFIG.rwaDesk, CONFIG.packDesk, CONFIG.managerSleeve, CONFIG.winNet, CONFIG.winNetDrawController, WSNET_WRAPPER, ...NETNET_PRODUCT_INFRA, '0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dead'].map((address) => address.toLowerCase()));
 const MOON_BAG_KEY = 'netnet-moon-math-bag-v1';
 const MOON_TARGETS_KEY = 'netnet-moon-math-market-targets-v1';
+const WINNET_FALLBACK_RPC = 'https://robinhood-rpc.publicnode.com';
 let snapshotSleeveFallback = null;
 const publicClient = createPublicClient({ transport: http(CONFIG.rpc, { retryCount: 3, timeout: 10_000 }) });
+const winNetFallbackClient = createPublicClient({ transport: http(WINNET_FALLBACK_RPC, { retryCount: 2, timeout: 10_000 }) });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function fetchRpcWinNetDraws(fromBlock, toBlock) {
   const logs = await publicClient.getLogs({ address: CONFIG.winNetDrawController, event: drawSettledEvent, fromBlock: BigInt(fromBlock), toBlock: BigInt(toBlock) });
@@ -85,13 +87,19 @@ const ago = (date) => { if (!date) return '—'; const s = Math.max(0, (Date.now
 
 
 async function readWinNetPower(account, knownPeriod = null) {
-  const period = knownPeriod ?? await publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'currentPeriod' });
-  const [boostedPrincipal, activeBonus, drawPower] = await Promise.all([
-    publicClient.readContract({ address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [account] }),
-    publicClient.readContract({ address: CONFIG.winNetBonusBook, abi: bonusBookPowerAbi, functionName: 'activeBonusOf', args: [account, period] }),
-    publicClient.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'weightOf', args: [account] }),
-  ]);
-  return { period, boostedPrincipal: BigInt(boostedPrincipal), activeBonus: BigInt(activeBonus), drawPower: BigInt(drawPower) };
+  let lastError;
+  for (const client of [publicClient, winNetFallbackClient]) {
+    try {
+      const period = knownPeriod ?? await client.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'currentPeriod' });
+      const [boostedPrincipal, activeBonus, drawPower] = await Promise.all([
+        client.readContract({ address: CONFIG.winNet, abi: prizeVaultPowerAbi, functionName: 'boostedPrincipalOf', args: [account] }),
+        client.readContract({ address: CONFIG.winNetBonusBook, abi: bonusBookPowerAbi, functionName: 'activeBonusOf', args: [account, period] }),
+        client.readContract({ address: CONFIG.winNetDrawController, abi: drawControllerAbi, functionName: 'weightOf', args: [account] }),
+      ]);
+      return { period, boostedPrincipal: BigInt(boostedPrincipal), activeBonus: BigInt(activeBonus), drawPower: BigInt(drawPower) };
+    } catch (error) { lastError = error; }
+  }
+  throw lastError;
 }
 
 function Window({ title, children, className = '' }) {
