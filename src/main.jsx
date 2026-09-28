@@ -417,7 +417,10 @@ function App() {
     if (!data) return [];
     const q = query.toLowerCase().trim();
     return (data.winNetStakers || []).filter((row) => BigInt(row.balance || 0) > 0n && !excludedAddresses.has(row.address.toLowerCase()) && (!q || row.address.toLowerCase().includes(q))).map((row) => {
-      const power = BigInt(row.drawPower || 0), bonus = BigInt(row.activeBonus || 0), lock = BigInt(row.lockBoost || 0);
+      const principal = BigInt(row.balance || 0), boosted = BigInt(row.boostedPrincipal || principal), bonus = BigInt(row.activeBonus || 0);
+      const staleBoost = boosted > principal * 2n;
+      const lock = staleBoost ? 0n : BigInt(row.lockBoost || 0);
+      const power = staleBoost ? principal + bonus : BigInt(row.drawPower || 0);
       const odds = power > 0n && BigInt(data.winNetTotalWeight || 0) > 0n ? Number(BigInt(data.winNetTotalWeight) / power) : null;
       return { ...row, drawPower: power.toString(), activeBonus: bonus.toString(), lockBoost: lock.toString(), odds, bonusShare: power > 0n ? Number(bonus + lock) / Number(power) * 100 : 0 };
     }).sort((a, b) => {
