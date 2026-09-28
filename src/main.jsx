@@ -162,11 +162,12 @@ function App() {
     ]);
     for (let start = 0; start < accounts.length; start += 20) {
       const batch = accounts.slice(start, start + 20);
-      const values = await Promise.all(batch.map((account) => readWinNetPower(account, period)));
+      const values = await Promise.allSettled(batch.map((account) => readWinNetPower(account, period)));
       batch.forEach((account, index) => {
+        if (values[index].status !== 'fulfilled') return;
         const wallet = base.winNetWallets.get(account);
         if (!wallet) return;
-        const { boostedPrincipal, activeBonus, drawPower } = values[index], principal = BigInt(wallet.principal || 0);
+        const { boostedPrincipal, activeBonus, drawPower } = values[index].value, principal = BigInt(wallet.principal || 0);
         base.winNetWallets.set(account, { ...wallet, boostedPrincipal: boostedPrincipal.toString(), lockBoost: (boostedPrincipal > principal ? boostedPrincipal - principal : 0n).toString(), activeBonus: activeBonus.toString(), drawPower: drawPower.toString() });
       });
     }
@@ -258,7 +259,7 @@ function App() {
       } catch { /* keep the indexed snapshot when a live contract read is unavailable */ }
     })();
     return () => { cancelled = true; };
-  }, [query, tab]);
+  }, [query, tab, state?.winNetCutoffBlock]);
   useEffect(() => {
     let alive = true;
     const loadFund = async () => {
