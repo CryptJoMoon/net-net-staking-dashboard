@@ -165,7 +165,8 @@ async function rpcCallBatch(calls, depth = 0) {
   try {
     return [await client.readContract({ address: call.address, abi: call.abi, functionName: call.functionName, args: call.args || [] })];
   } catch (error) {
-    throw lastError || error;
+    console.warn(`Skipping failed contract read ${call.functionName}: ${(lastError || error)?.shortMessage || (lastError || error)?.message}`);
+    return [null];
   }
 }
 
@@ -185,6 +186,7 @@ async function refreshWinNetDrawPower(state) {
     ]);
     const values = await rpcCallBatch(calls);
     batch.forEach(([key, wallet], index) => {
+      if (values.slice(index * 3, index * 3 + 3).some((value) => value == null)) return;
       const boostedPrincipal = BigInt(values[index * 3] || 0), activeBonus = BigInt(values[index * 3 + 1] || 0), drawPower = BigInt(values[index * 3 + 2] || 0);
       const principal = BigInt(wallet.principal || 0);
       state.winNetWallets.set(key, { ...wallet, boostedPrincipal: boostedPrincipal.toString(), lockBoost: (boostedPrincipal > principal ? boostedPrincipal - principal : 0n).toString(), activeBonus: activeBonus.toString(), drawPower: drawPower.toString() });
