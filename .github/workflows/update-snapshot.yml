@@ -29,9 +29,10 @@ jobs:
       - run: npm ci
       - name: Build snapshot with retries
         env:
-          # 30 x 5k blocks per token outruns normal chain growth; the previous
-          # 10-chunk budget could remain permanently behind the head.
-          HOLDER_CHUNKS: ${{ github.event_name == 'push' && '0' || '30' }}
+          # Keep scheduled runs shorter than the 10-minute cadence so a newer
+          # run does not continually cancel the snapshot before it can commit.
+          # Two 5k-block chunks per token still comfortably outrun chain growth.
+          HOLDER_CHUNKS: ${{ github.event_name == 'push' && '0' || '2' }}
           HOLDER_CHUNK_BLOCKS: '5000'
         run: |
           for attempt in 1 2 3; do
