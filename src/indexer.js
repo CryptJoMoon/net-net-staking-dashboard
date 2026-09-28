@@ -1,6 +1,7 @@
 export const CONFIG = {
   api: 'https://robinhoodchain.blockscout.com/api/v2',
-  explorer: 'https://robinhoodchain.blockscout.com',
+  legacyApi: 'https://robinhoodchain.blockscout.com/api',
+  explorer: 'https://robin.etherscan.io',
   rpc: 'https://rpc.mainnet.chain.robinhood.com',
   staking: '0xB078cc304A0B264C5F3680DC0488954ACcd02E87',
   sNet: '0xb773ec2c326b7f98a5a83fc098825492f020a4c7',
@@ -262,7 +263,7 @@ export async function fetchHistoricalLogs(address, fromBlock, toBlock, onProgres
     const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address });
     let json;
     for (let retry = 0; retry < 8; retry++) {
-      json = await request(`https://robinhoodchain.blockscout.com/api?${params}`); requests += 1;
+      json = await request(`${CONFIG.legacyApi}?${params}`); requests += 1;
       if (!/Too many requests/i.test(json.message || json.result || '')) break;
       await new Promise((resolve) => setTimeout(resolve, 1200 * (retry + 1)));
     }
@@ -285,7 +286,7 @@ export async function fetchRawHistoricalLogs(address, fromBlock, toBlock, onProg
     const params = new URLSearchParams({ module: 'logs', action: 'getLogs', fromBlock: String(from), toBlock: String(to), address, ...(topic0 ? { topic0 } : {}) });
     let json;
     for (let retry = 0; retry < 8; retry++) {
-      json = await request(`https://robinhoodchain.blockscout.com/api?${params}`); requests += 1;
+      json = await request(`${CONFIG.legacyApi}?${params}`); requests += 1;
       if (!/Too many requests/i.test(json.message || json.result || '')) break;
       await new Promise((resolve) => setTimeout(resolve, 1200 * (retry + 1)));
     }
@@ -324,7 +325,7 @@ export async function fetchWalletStakeHistory(address, onProgress) {
         address: CONFIG.staking, topic0, [`topic${actorTopic}`]: paddedWallet,
         [`topic0_${actorTopic}_opr`]: 'and', page: String(page), offset: String(offset),
       });
-      const json = await request(`${CONFIG.explorer}/api?${params}`);
+      const json = await request(`${CONFIG.legacyApi}?${params}`);
       if (json?.status === '0' && /no (?:logs|records)/i.test(json.message || json.result || '')) break;
       if (!Array.isArray(json?.result)) throw new Error('The explorer could not return this wallet history. Please try again.');
       collected.push(...json.result); onProgress?.({ page, count: collected.length });
