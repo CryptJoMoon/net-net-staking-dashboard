@@ -39,6 +39,7 @@ const WINNET_TOPICS = {
   exitedToUsdg: '0x976a9f453f5c058ec504d1fd497581dc7cda9fe95209f9dc6f55f8ed749051f0',
   prizePaid: '0x3d8e8e4fb25b225f79c876a0e65b0399b4202048d4d72f276c1f0fa046891167',
   drawSettled: '0x0e108fc72f744fe983a194fe1f5f1cf30a898e7e18affc06d88d9db79bbe4174',
+  locked: '0x44cebfefa4561bee5b61d675ccfd8dc9969fff9cc15e7a4eccccd62af94f9c11',
   earlyUnlocked: '0xa3fbf5ab09b5d4aef9d96d27ec59daf5803b6b5b80a219070d47c8b907616053',
   fullExit: '0x68443e4550884e7d05d71c512db6fcd2474daf53bf5b98464a53637b9011e560',
 };
@@ -166,9 +167,13 @@ export function applyWinNetLogs(state, logs) {
       if (!payoutAlreadyCounted) { addBig(wallet, 'principal', amount); addBig(wallet, 'prizes', amount); wallet.wins = (wallet.wins || 0) + 1; }
       type = 'WinNET Draw';
     }
+    else if (topic === WINNET_TOPICS.locked) { type = 'WinNET Lock'; }
     else if (topic === WINNET_TOPICS.earlyUnlocked) { amount = dataUint(log.data, 1); wallet.principal = (BigInt(wallet.principal) > amount ? BigInt(wallet.principal) - amount : 0n).toString(); addBig(wallet, 'penalties', amount); type = 'WinNET Penalty'; }
     else if (topic === WINNET_TOPICS.fullExit) { wallet.principal = '0'; type = 'WinNET Full Exit'; }
     if (type) {
+      wallet.boostedPrincipal = wallet.principal;
+      wallet.lockBoost = '0';
+      wallet.drawPower = wallet.principal;
       wallet.lastActive = log.block_timestamp;
       state.winNetActivity.unshift({ id, type, actor, amount: amount.toString(), drawId: topic === WINNET_TOPICS.drawSettled ? Number(BigInt(log.topics[1])) : null, block: log.block_number, timestamp: log.block_timestamp, tx: log.transaction_hash });
     }
