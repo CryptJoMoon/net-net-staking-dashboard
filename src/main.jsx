@@ -152,7 +152,7 @@ function App() {
   };
   const openWalletHistory = (address) => { setTab('history'); setHistoryAddress(address); setTimeout(() => loadWalletHistory(address), 0); };
   const refreshRecentWinNetPower = async (base, logs, fromBlock) => {
-    const logAccounts = logs.map((log) => log.topics?.[1] ? \`0x\${log.topics[1].slice(-40)}\`.toLowerCase() : null);
+    const logAccounts = logs.map((log) => log.topics?.[1] ? ('0x' + log.topics[1].slice(-40)).toLowerCase() : null);
     const activityAccounts = (base.winNetActivity || []).filter((event) => event.block > fromBlock).map((event) => event.actor?.toLowerCase());
     const accounts = [...new Set([...logAccounts, ...activityAccounts].filter((address) => address && base.winNetWallets.has(address)))];
     if (!accounts.length) return;
